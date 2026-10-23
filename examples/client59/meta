@@ -1,0 +1,4 @@
+# transport goes through the lappy connection (its namespace)
+rides=lappy
+# office prefixes reachable from main; colliding ones are refused loudly
+expose="10.48.0.0/16 10.10.0.0/24"

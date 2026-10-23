@@ -1,0 +1,3 @@
+#!/bin/sh
+# OpenVPN transport with the fd trick; see README.
+exec nsm helper openvpn conf/client59.ovpn

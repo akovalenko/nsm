@@ -1,0 +1,124 @@
+package conn
+
+import (
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseMeta(t *testing.T) {
+	src := `
+# comment
+rides=lappy
+expose="10.48.0.0/16 10.10.0.5/24"   # masked below
+dns='eputs.spd:10.48.1.53,corp.example:10.10.0.2'
+resolv="nameserver 1.1.1.1"
+mtu=1370
+`
+	m, err := ParseMeta(strings.NewReader(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Rides != "lappy" {
+		t.Errorf("rides = %q", m.Rides)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.48.0.0/16"), netip.MustParsePrefix("10.10.0.0/24")}
+	if len(m.Expose) != 2 || m.Expose[0] != want[0] || m.Expose[1] != want[1] {
+		t.Errorf("expose = %v, want %v", m.Expose, want)
+	}
+	if len(m.DNS) != 2 || m.DNS[0].Domain != "eputs.spd" || m.DNS[0].Server != netip.MustParseAddr("10.48.1.53") ||
+		m.DNS[1].Domain != "corp.example" {
+		t.Errorf("dns = %+v", m.DNS)
+	}
+	if m.Resolv != "nameserver 1.1.1.1" || m.MTU != 1370 {
+		t.Errorf("resolv=%q mtu=%d", m.Resolv, m.MTU)
+	}
+	rc, err := m.ResolvConf()
+	if err != nil || rc != "nameserver 1.1.1.1\n" {
+		t.Errorf("ResolvConf = %q, %v", rc, err)
+	}
+}
+
+func TestParseMetaDefaultsAndErrors(t *testing.T) {
+	m, err := ParseMeta(strings.NewReader(""))
+	if err != nil || m.Rides != "main" || m.Expose != nil || m.MTU != 0 {
+		t.Errorf("empty meta: %+v, %v", m, err)
+	}
+	for _, bad := range []string{
+		"bogus=1",
+		"expose=10.0.0.0/8 garbage",
+		"expose=fd00::/8",
+		"mtu=100",
+		"dns=nodomain",
+		"rides='unterminated",
+		"rides=main.too.long.name",
+		"just a line",
+	} {
+		if _, err := ParseMeta(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}
+
+func TestValidName(t *testing.T) {
+	for _, ok := range []string{"lappy", "client59", "a", "wg-office.2", "twelve_chars"} {
+		if !ValidName(ok) {
+			t.Errorf("%q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "main", "-lead", "thirteen_char", "with space", "../x"} {
+		if ValidName(bad) {
+			t.Errorf("%q should be invalid", bad)
+		}
+	}
+}
+
+func TestLoadAndList(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name, meta string) {
+		d := filepath.Join(dir, name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if meta != "" {
+			if err := os.WriteFile(filepath.Join(d, "meta"), []byte(meta), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mk("lappy", "")
+	mk("client59", "rides=lappy\nexpose=10.48.0.0/16\n")
+	mk("selfish", "rides=selfish\n")
+	if err := os.WriteFile(filepath.Join(dir, "stray-file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := List(dir)
+	if err != nil || strings.Join(names, ",") != "client59,lappy,selfish" {
+		t.Errorf("List = %v, %v", names, err)
+	}
+	c, err := Load(dir, "client59")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Meta.Rides != "lappy" || c.NS() != "client59" || c.Veth() != "ve-client59" || c.RunScript() != filepath.Join(dir, "client59", "run") {
+		t.Errorf("Load = %+v", c)
+	}
+	if c, err := Load(dir, "lappy"); err != nil || c.Meta.Rides != "main" {
+		t.Errorf("lappy: %+v, %v", c, err)
+	}
+	if _, err := Load(dir, "selfish"); err == nil {
+		t.Error("rides=self should fail")
+	}
+	if _, err := Load(dir, "nope"); err == nil {
+		t.Error("missing should fail")
+	}
+	if _, err := Load(dir, "main"); err == nil {
+		t.Error("main should be rejected")
+	}
+	if l, err := List(filepath.Join(dir, "absent")); err != nil || l != nil {
+		t.Errorf("absent confdir: %v, %v", l, err)
+	}
+}

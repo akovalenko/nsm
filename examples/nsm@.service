@@ -1,0 +1,17 @@
+# systemd adapter for nsm connections: systemctl enable --now nsm@lappy
+# nsm run is the whole contract; systemd only restarts it. The skeleton
+# (netns, veth, mounts) survives restarts on purpose; `nsm down <name>`
+# after `systemctl stop` removes it.
+[Unit]
+Description=nsm connection %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nsm run %i
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

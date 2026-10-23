@@ -1,0 +1,3 @@
+#!/bin/sh
+# WireGuard transport; socket pinned to $RIDES_NS, interface moved to $CONN_NS.
+exec nsm helper wg conf/wg.conf
