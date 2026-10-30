@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,12 +28,24 @@ type Sys struct {
 	DryRun  bool
 	Log     io.Writer
 
+	// Which resolves bare tool names to executable paths; the default
+	// searches PATH and the well-known system directories. Tests swap it
+	// for the identity so recorded command lines stay machine-independent.
+	Which func(name string) string
+
 	// execFn is swapped in tests; nil means run for real.
 	execFn func(stdin, name string, args ...string) (string, error)
 }
 
 // New returns a Sys that really runs commands.
-func New() *Sys { return &Sys{Log: os.Stderr} }
+func New() *Sys { return &Sys{Log: os.Stderr, Which: which} }
+
+func (s *Sys) which(name string) string {
+	if s.Which != nil {
+		return s.Which(name)
+	}
+	return which(name)
+}
 
 // CmdError is returned when a tool exits non-zero; it carries stderr.
 type CmdError struct {
@@ -89,6 +102,7 @@ func (s *Sys) run(query bool, stdin, name string, args ...string) (string, error
 	if s.DryRun && !query {
 		return "", nil
 	}
+	name = s.which(name)
 	cmd := exec.Command(name, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -149,7 +163,9 @@ func (s *Sys) InWithStdin(stdin, ns string, name string, args ...string) (string
 	if ns == "" || ns == Main {
 		return s.RunIn(stdin, name, args...)
 	}
-	return s.RunIn(stdin, "ip", append([]string{"netns", "exec", ns, name}, args...)...)
+	// The inner command is executed by ip with our environment, which in an
+	// openvpn --up handler has no PATH — resolve it to an absolute path.
+	return s.RunIn(stdin, "ip", append([]string{"netns", "exec", ns, s.which(name)}, args...)...)
 }
 
 // Command builds a foreground exec.Cmd running inside ns with inherited
@@ -165,12 +181,41 @@ func (s *Sys) Command(ns string, name string, args ...string) *exec.Cmd {
 	}
 	if s.DryRun {
 		full = []string{"true"}
+	} else {
+		full[0] = s.which(full[0])
 	}
 	cmd := exec.Command(full[0], full[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd
+}
+
+// toolSearchDirs is where bare tool names are looked up beyond PATH: nsm
+// runs in environments without one (an openvpn --up handler has no PATH at
+// all, systemd units may have a minimal one).
+var toolSearchDirs = []string{
+	"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+}
+
+// which resolves a bare tool name to an absolute path: PATH first (when it
+// yields anything), then the well-known system directories. Names that
+// already contain a slash are returned unchanged; an unresolvable name is
+// returned as is and fails at exec time with the usual error.
+func which(name string) string {
+	if strings.ContainsRune(name, '/') {
+		return name
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, d := range toolSearchDirs {
+		p := filepath.Join(d, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return name
 }
 
 // Quote renders argv for humans in the plan/verbose output.

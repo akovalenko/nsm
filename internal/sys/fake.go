@@ -19,7 +19,7 @@ type Fake struct {
 // NewFake returns a Sys whose commands are recorded rather than run.
 func NewFake() *Fake {
 	f := &Fake{outs: map[string]string{}, errs: map[string]error{}}
-	f.Sys = &Sys{Log: &strings.Builder{}, execFn: f.exec}
+	f.Sys = &Sys{Log: &strings.Builder{}, Which: func(n string) string { return n }, execFn: f.exec}
 	return f
 }
 
