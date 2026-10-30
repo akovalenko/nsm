@@ -86,13 +86,27 @@ func TestGetent(t *testing.T) {
 }
 
 func TestOpenVPNArgs(t *testing.T) {
-	args := OpenVPNArgs("/usr/local/bin/nsm", "/etc/nsm/client59/conf/client59.ovpn", []string{"--verb", "1"})
+	args, err := OpenVPNArgs("/usr/local/bin/nsm", "/etc/nsm/client59/conf/client59.ovpn",
+		Env{Name: "client59", Dir: "/etc/nsm/client59", NS: "client59", Rides: "lappy"}, []string{"--verb", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := strings.Join(args, " ")
 	for _, w := range []string{"--cd /etc/nsm/client59/conf", "--config client59.ovpn", "--ifconfig-noexec", "--route-noexec",
-		"--script-security 2", "--up /usr/local/bin/nsm helper openvpn-up", "--up-restart", "--verb 1"} {
+		"--script-security 2", "--up-restart", "--verb 1"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("missing %q in %q", w, got)
 		}
+	}
+	// The connection context must travel as --up arguments: openvpn does not
+	// pass the inherited environment to scripts.
+	wantUp := "--up /usr/local/bin/nsm helper openvpn-up client59 /etc/nsm/client59 client59 lappy"
+	if !strings.Contains(got, wantUp) {
+		t.Errorf("missing %q in %q", wantUp, got)
+	}
+	if _, err := OpenVPNArgs("/usr/local/bin/nsm", "/etc/nsm/client59/conf/c.ovpn",
+		Env{Name: "c", Dir: "/etc/nsm/my dir", NS: "c", Rides: "main"}, nil); err == nil {
+		t.Error("whitespace in context must be rejected")
 	}
 }
 

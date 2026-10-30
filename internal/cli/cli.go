@@ -151,7 +151,7 @@ func (g *globals) cmdHelper(args []string) int {
 		}
 		return g.helperOpenVPN(args[1], extra)
 	case "openvpn-up":
-		return g.helperOpenVPNUp()
+		return g.helperOpenVPNUp(args[1:])
 	}
 	return g.fail("helper: unknown %q", args[0])
 }

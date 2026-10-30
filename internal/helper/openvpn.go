@@ -20,17 +20,29 @@ import (
 // device into the connection ns and configures it from the environment
 // openvpn hands to scripts (--ifconfig-noexec/--route-noexec make openvpn
 // leave that to us).
-func OpenVPNArgs(self, ovpn string, extra []string) []string {
+//
+// openvpn runs scripts with a sanitized environment (only its own exports
+// and --setenv reach them, by construction of make_env_array; verified on
+// 2.6), so the connection context travels as --up ARGUMENTS, which openvpn
+// appends its own dev/mtu/... parameters to — FromArgs reads them from the
+// front. Whitespace cannot be quoted in --up, so it is rejected up front.
+func OpenVPNArgs(self, ovpn string, e Env, extra []string) ([]string, error) {
+	up := fmt.Sprintf("%s helper openvpn-up %s %s %s %s", self, e.Name, e.Dir, e.NS, e.Rides)
+	for _, f := range []string{self, e.Name, e.Dir, e.NS, e.Rides} {
+		if strings.ContainsAny(f, " \t") {
+			return nil, fmt.Errorf("%q contains whitespace; openvpn --up cannot quote it", f)
+		}
+	}
 	args := []string{
 		"--cd", filepath.Dir(ovpn),
 		"--config", filepath.Base(ovpn),
 		"--ifconfig-noexec",
 		"--route-noexec",
 		"--script-security", "2",
-		"--up", self + " helper openvpn-up",
+		"--up", up,
 		"--up-restart",
 	}
-	return append(args, extra...)
+	return append(args, extra...), nil
 }
 
 // RunOpenVPN runs openvpn in the foreground, forwarding stop signals.
@@ -39,14 +51,15 @@ func RunOpenVPN(s *sys.Sys, e Env, ovpn string, extra []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.ContainsAny(self, " \t") {
-		return fmt.Errorf("nsm binary path %q contains whitespace; openvpn --up cannot quote it", self)
-	}
 	ovpn, err = filepath.Abs(ovpn)
 	if err != nil {
 		return err
 	}
-	cmd := s.Command("", "openvpn", OpenVPNArgs(self, ovpn, extra)...)
+	args, err := OpenVPNArgs(self, ovpn, e, extra)
+	if err != nil {
+		return err
+	}
+	cmd := s.Command("", "openvpn", args...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

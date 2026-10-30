@@ -181,8 +181,8 @@ func (g *globals) helperOpenVPN(ovpn string, extra []string) int {
 	return g.fail("helper openvpn: %v", err)
 }
 
-func (g *globals) helperOpenVPNUp() int {
-	e, err := helper.FromProcess()
+func (g *globals) helperOpenVPNUp(args []string) int {
+	e, err := helper.FromArgs(args)
 	if err != nil {
 		return g.fail("%v", err)
 	}

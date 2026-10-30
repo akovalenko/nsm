@@ -34,6 +34,26 @@ func Vars(c *conn.Conn) []string {
 	}
 }
 
+// FromArgs builds Env from the context arguments baked into openvpn's --up
+// command line: openvpn does not pass the inherited environment to scripts,
+// so `nsm helper openvpn` encodes name/dir/ns/rides there and openvpn
+// appends its own dev/mtu/... arguments after them.
+func FromArgs(args []string) (Env, error) {
+	if len(args) < 4 {
+		return Env{}, fmt.Errorf("want <name> <dir> <ns> <rides> context arguments (baked into --up by `nsm helper openvpn`)")
+	}
+	e := Env{Name: args[0], Dir: args[1], NS: args[2], Rides: args[3]}
+	if e.Name == "" || e.Dir == "" || e.NS == "" {
+		return e, fmt.Errorf("empty connection context")
+	}
+	c, err := conn.Load(filepath.Dir(e.Dir), e.Name)
+	if err != nil {
+		return e, err
+	}
+	e.Meta = c.Meta
+	return e, nil
+}
+
 // FromProcess reads CONN_* and reloads meta from CONN_DIR.
 func FromProcess() (Env, error) {
 	e := Env{
