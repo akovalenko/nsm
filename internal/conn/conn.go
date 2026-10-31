@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,7 +148,7 @@ func ParseMeta(r io.Reader) (Meta, error) {
 			}
 			m.Rides = val
 		case "expose":
-			for _, f := range strings.Fields(val) {
+			for _, f := range metaFields(val) {
 				p, err := netip.ParsePrefix(f)
 				if err != nil {
 					return m, fmt.Errorf("line %d: expose %q: %v", ln, f, err)
@@ -155,10 +156,13 @@ func ParseMeta(r io.Reader) (Meta, error) {
 				if !p.Addr().Is4() {
 					return m, fmt.Errorf("line %d: expose %q: IPv4 only for now", ln, f)
 				}
-				m.Expose = append(m.Expose, p.Masked())
+				p = p.Masked()
+				if !slices.Contains(m.Expose, p) {
+					m.Expose = append(m.Expose, p)
+				}
 			}
 		case "dns":
-			for _, f := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ' ' }) {
+			for _, f := range metaFields(val) {
 				dom, srv, ok := strings.Cut(f, ":")
 				if !ok || dom == "" {
 					return m, fmt.Errorf("line %d: dns %q: want domain:server", ln, f)
@@ -182,6 +186,12 @@ func ParseMeta(r io.Reader) (Meta, error) {
 		}
 	}
 	return m, sc.Err()
+}
+
+// metaFields splits list-valued meta values: commas and whitespace, both,
+// like dns= has always done.
+func metaFields(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
 }
 
 // unquote strips one level of shell quotes; in double quotes only \" and \\

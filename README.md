@@ -31,7 +31,8 @@ supervisor restarts: systemd, runit/s6, or the built-in nanny.
 ```sh
 # netns that carries the transport socket: "main" (default) or another connection
 rides=lappy
-# IPv4 prefixes to mount into main (space-separated CIDRs)
+# IPv4 prefixes to mount into main: space- or comma-separated CIDRs,
+# multiple expose= lines accumulate, duplicates collapse
 expose="10.48.0.0/16 10.10.0.0/24"
 # resolv.conf for this connection's netns: literal text or a file path
 resolv="nameserver 1.1.1.1"

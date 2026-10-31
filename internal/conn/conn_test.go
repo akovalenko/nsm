@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,8 @@ func TestParseMeta(t *testing.T) {
 	src := `
 # comment
 rides=lappy
-expose="10.48.0.0/16 10.10.0.5/24"   # masked below
+expose="10.48.0.0/16,10.10.0.5/24 10.48.0.9/16"   # commas, spaces, dup collapsed
+expose=192.168.90.0/24
 dns='eputs.spd:10.48.1.53,corp.example:10.10.0.2'
 resolv="nameserver 1.1.1.1"
 mtu=1370
@@ -24,8 +26,8 @@ mtu=1370
 	if m.Rides != "lappy" {
 		t.Errorf("rides = %q", m.Rides)
 	}
-	want := []netip.Prefix{netip.MustParsePrefix("10.48.0.0/16"), netip.MustParsePrefix("10.10.0.0/24")}
-	if len(m.Expose) != 2 || m.Expose[0] != want[0] || m.Expose[1] != want[1] {
+	want := []netip.Prefix{netip.MustParsePrefix("10.48.0.0/16"), netip.MustParsePrefix("10.10.0.0/24"), netip.MustParsePrefix("192.168.90.0/24")}
+	if !slices.Equal(m.Expose, want) {
 		t.Errorf("expose = %v, want %v", m.Expose, want)
 	}
 	if len(m.DNS) != 2 || m.DNS[0].Domain != "eputs.spd" || m.DNS[0].Server != netip.MustParseAddr("10.48.1.53") ||
