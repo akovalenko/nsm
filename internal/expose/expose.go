@@ -44,9 +44,10 @@ type Pair struct {
 
 // route is the subset of `ip -j route` nsm reads.
 type route struct {
-	Dst string `json:"dst"`
-	Dev string `json:"dev"`
-	Via string `json:"gateway"`
+	Dst      string `json:"dst"`
+	Dev      string `json:"dev"`
+	Via      string `json:"gateway"`
+	Protocol string `json:"protocol"`
 }
 
 func (r route) prefix() (netip.Prefix, bool) {
@@ -158,6 +159,15 @@ func ensureVeth(s *sys.Sys, c *conn.Conn, pool netip.Prefix) (Pair, error) {
 	if _, err := s.IP(ns, "link", "set", NSVeth, "up"); err != nil {
 		return Pair{}, err
 	}
+	// The kernel installs the connected route when the address is first
+	// added, but `ip addr replace` on an already-configured interface is a
+	// no-op and does not bring a deleted route back; self-heal it, since
+	// every mount route's `via` is validated against it.
+	if out, err := s.IPQ(sys.Main, "route", "show", pair.Main.String()+"/31", "dev", veth); err == nil && strings.TrimSpace(out) == "" {
+		if _, err := s.IP(sys.Main, "route", "add", pair.Main.String()+"/31", "dev", veth); err != nil {
+			return Pair{}, err
+		}
+	}
 	return pair, nil
 }
 
@@ -234,7 +244,10 @@ func Mount(s *sys.Sys, c *conn.Conn, pool netip.Prefix) ([]Result, error) {
 		if r.Dev != c.Veth() {
 			continue
 		}
-		if rp, ok := r.prefix(); ok && !wanted[rp] {
+		// Never touch kernel connected routes (the veth's own /31) or
+		// anything inside the veth pool: those are infrastructure, not
+		// mounts — deleting the /31 had every later run's `via` rejected.
+		if rp, ok := r.prefix(); ok && !wanted[rp] && r.Protocol != "kernel" && !pool.Contains(rp.Addr()) {
 			s.TryIP(sys.Main, "route", "del", rp.String(), "dev", c.Veth())
 		}
 	}

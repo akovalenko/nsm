@@ -14,7 +14,9 @@ var pool = netip.MustParsePrefix("169.254.100.0/23")
 const mainRoutesJSON = `[
  {"dst":"default","gateway":"192.168.1.1","dev":"wlan0"},
  {"dst":"192.168.1.0/24","dev":"wlan0","protocol":"kernel","scope":"link"},
+ {"dst":"169.254.100.2/31","dev":"ve-other","protocol":"kernel","scope":"link","prefsrc":"169.254.100.2"},
  {"dst":"10.10.0.0/24","dev":"ve-other","gateway":"169.254.100.3"},
+ {"dst":"169.254.100.0/31","dev":"ve-client59","protocol":"kernel","scope":"link","prefsrc":"169.254.100.0"},
  {"dst":"10.99.0.0/16","dev":"ve-client59","gateway":"169.254.100.1"},
  {"dst":"172.16.5.7","dev":"tun9"}
 ]`
@@ -101,6 +103,7 @@ func TestMountSequence(t *testing.T) {
 		"ip -n client59 addr replace 169.254.100.1/31 dev ve0",
 		"ip link set ve-client59 up",
 		"ip -n client59 link set ve0 up",
+		"ip route add 169.254.100.0/31 dev ve-client59", // connected route self-heal
 		"nft -f - <<< table ip nsm",
 		"ip netns exec client59 nft -f - <<< table ip nsm",
 		"ip netns exec client59 sysctl -q -w net.ipv4.ip_forward=1",
@@ -114,6 +117,9 @@ func TestMountSequence(t *testing.T) {
 	}
 	if f.Called("ip route replace 192.168.1.0/24") {
 		t.Error("rejected prefix must not be routed")
+	}
+	if f.Called("ip route del 169.254.100.0/31") || f.Called("ip route del 169.254.100.2/31") {
+		t.Error("kernel connected routes of the veth pool must never be deleted")
 	}
 	mainSide, nsSide := NATScripts(c, pool)
 	if !strings.Contains(mainSide, `oifname "ve-client59" masquerade`) || !strings.Contains(nsSide, "ip saddr 169.254.100.0/23 masquerade") {
