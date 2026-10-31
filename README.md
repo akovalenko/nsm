@@ -34,7 +34,8 @@ rides=lappy
 # IPv4 prefixes to mount into main: space- or comma-separated CIDRs,
 # multiple expose= lines accumulate, duplicates collapse
 expose="10.48.0.0/16 10.10.0.0/24"
-# resolv.conf for this connection's netns: literal text or a file path
+# resolv.conf for this connection's netns: literal text (one directive) or a
+# file path — absolute, or relative to the connection dir, with "/" in it
 resolv="nameserver 1.1.1.1"
 # payload interface MTU override
 mtu=1370
@@ -152,6 +153,14 @@ connection's netns, a private mount namespace with that connection's
 (`$SUDO_UID`, or `-u user`) and exec. Beyond HOME/USER it restores what
 sudo's env reset tends to lose if the files are there: `XDG_RUNTIME_DIR`,
 `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`.
+
+The same mount namespace shadows the resolver-daemon sockets (`nscd`,
+`systemd-resolved`, `sssd`) with a `/dev/null` bind. Filesystem unix sockets
+cross netns boundaries, and without the shadow a daemon in main keeps
+answering glibc's lookups — with main's resolver, and negative answers
+included — so the connection's resolv.conf would never be consulted; per-ns
+`nsswitch.conf` cannot prevent this, because the nscd interception happens
+before nsswitch.
 
 Namespace facts to know: abstract unix sockets are per-netns (X11 falls back
 to its filesystem socket and works; a D-Bus `unix:abstract=` address does

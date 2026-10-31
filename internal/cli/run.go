@@ -47,7 +47,7 @@ func (g *globals) cmdRun(name string) int {
 	if err := netns.Ensure(s, c.NS()); err != nil {
 		return g.fail("%v", err)
 	}
-	rc, err := c.Meta.ResolvConf()
+	rc, err := c.ResolvConf()
 	if err != nil {
 		return g.fail("%v", err)
 	}

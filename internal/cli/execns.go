@@ -92,6 +92,16 @@ func userName(u *user.User) string {
 	return u.Username
 }
 
+// resolverSockets are the unix sockets through which NSS daemons in main
+// would resolve on the namespace's behalf, defeating the connection's own
+// resolv.conf (per-netns nsswitch.conf does not help: the nscd interception
+// in glibc happens before nsswitch).
+var resolverSockets = []string{
+	"/var/run/nscd/socket",                    // nscd hosts cache
+	"/run/systemd/resolve/io.systemd.Resolve", // nss-resolve → systemd-resolved
+	"/var/lib/sss/pipes/nss",                  // sssd NSS responder
+}
+
 // targetUser resolves -u, else the sudo caller, else nil (stay root).
 func targetUser(flag string) (*user.User, error) {
 	if flag != "" {
@@ -130,6 +140,21 @@ func enter(name string, target *user.User, path string, argv, env []string) erro
 	if _, err := os.Stat(resolv); err == nil {
 		if err := syscall.Mount(resolv, "/etc/resolv.conf", "", syscall.MS_BIND, ""); err != nil {
 			return fmt.Errorf("bind %s: %w", resolv, err)
+		}
+	}
+
+	// Shadow resolver-daemon sockets. Filesystem unix sockets cross netns
+	// boundaries, so nscd or systemd-resolved in main would keep answering
+	// glibc's lookups on the connection's behalf — resolving with main's
+	// resolver and main's knowledge, negative answers included, and never
+	// letting the connection's resolv.conf speak. A /dev/null bind makes
+	// their connect() fail and glibc falls back to nsswitch and the dns
+	// module with OUR resolv.conf.
+	for _, p := range resolverSockets {
+		if _, err := os.Stat(p); err == nil {
+			if err := unix.Mount("/dev/null", p, "", unix.MS_BIND, ""); err != nil {
+				return fmt.Errorf("shadow %s: %w", p, err)
+			}
 		}
 	}
 

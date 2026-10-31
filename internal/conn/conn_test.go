@@ -37,9 +37,50 @@ mtu=1370
 	if m.Resolv != "nameserver 1.1.1.1" || m.MTU != 1370 {
 		t.Errorf("resolv=%q mtu=%d", m.Resolv, m.MTU)
 	}
-	rc, err := m.ResolvConf()
-	if err != nil || rc != "nameserver 1.1.1.1\n" {
+	c := &Conn{Name: "t", Dir: t.TempDir(), Meta: m}
+	if rc, err := c.ResolvConf(); err != nil || rc != "nameserver 1.1.1.1\n" {
 		t.Errorf("ResolvConf = %q, %v", rc, err)
+	}
+}
+
+func TestResolvConf(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "conf", "resolv.conf")
+	content := "nameserver 10.48.1.53\nnameserver 10.48.1.54\nsearch eputs.spd" // no trailing NL on purpose
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(v string) *Conn { return &Conn{Name: "t", Dir: dir, Meta: Meta{Resolv: v}} }
+
+	// relative path with a slash resolves against the connection dir
+	rc, err := mk("conf/resolv.conf").ResolvConf()
+	if err != nil || rc != content+"\n" {
+		t.Errorf("relative file: %q, %v", rc, err)
+	}
+	// so does an absolute path
+	rc, err = mk(file).ResolvConf()
+	if err != nil || rc != content+"\n" {
+		t.Errorf("absolute file: %q, %v", rc, err)
+	}
+	// a literal directive passes; anything else is refused loudly
+	if rc, err := mk("nameserver 1.1.1.1").ResolvConf(); err != nil || rc != "nameserver 1.1.1.1\n" {
+		t.Errorf("literal: %q, %v", rc, err)
+	}
+	if rc, err := mk("options edns0 trust-ad").ResolvConf(); err != nil || rc != "options edns0 trust-ad\n" {
+		t.Errorf("options literal: %q, %v", rc, err)
+	}
+	if _, err := mk("resolv.txt").ResolvConf(); err == nil {
+		t.Error("bare name without / must not be treated as a literal or a file")
+	}
+	if _, err := mk("conf/missing").ResolvConf(); err == nil {
+		t.Error("missing file must fail")
+	}
+	if rc, err := mk("").ResolvConf(); err != nil || rc != "" {
+		t.Errorf("empty: %q, %v", rc, err)
 	}
 }
 

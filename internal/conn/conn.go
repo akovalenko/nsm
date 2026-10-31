@@ -236,21 +236,43 @@ func unquote(v string) (string, error) {
 
 // ResolvConf returns the resolv.conf text the connection's ns should get
 // from meta, or "" when meta says nothing (the transport may then supply
-// pushed DNS). A value naming an existing file means that file's content.
-func (m Meta) ResolvConf() (string, error) {
-	v := m.Resolv
+// pushed DNS). A value containing "/" names a file — absolute, or relative
+// to the connection directory (`resolv=conf/resolv.conf`) — used verbatim;
+// anything else must be resolv.conf text itself (the meta parser is
+// line-based, so that means one directive: a nameserver or options line).
+func (c *Conn) ResolvConf() (string, error) {
+	v := c.Meta.Resolv
 	if v == "" {
 		return "", nil
 	}
-	if strings.HasPrefix(v, "/") {
-		b, err := os.ReadFile(v)
+	if strings.Contains(v, "/") {
+		p := v
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(c.Dir, p)
+		}
+		b, err := os.ReadFile(p)
 		if err != nil {
 			return "", fmt.Errorf("resolv=%s: %w", v, err)
 		}
-		return string(b), nil
+		return ensureNL(string(b)), nil
 	}
-	if !strings.HasSuffix(v, "\n") {
-		v += "\n"
+	w := v
+	if i := strings.IndexAny(v, " \t"); i >= 0 {
+		w = v[:i]
 	}
-	return v, nil
+	switch w {
+	case "nameserver", "search", "domain", "options", "sortlist":
+		return ensureNL(v), nil
+	}
+	if strings.HasPrefix(v, "#") {
+		return ensureNL(v), nil
+	}
+	return "", fmt.Errorf("resolv=%q: want resolv.conf text (nameserver/search/options...) or a file path containing \"/\"", v)
+}
+
+func ensureNL(s string) string {
+	if s == "" || strings.HasSuffix(s, "\n") {
+		return s
+	}
+	return s + "\n"
 }
