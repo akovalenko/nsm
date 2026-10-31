@@ -103,7 +103,16 @@ nsm nanny <name>     the respawn loop itself, in the foreground
 Global flags: `-C confdir`, `-v` (print every ip/wg/nft command), `-n` (dry
 run: print state changes instead of making them; read-only probes still run,
 so the plan matches the real state), `-pool CIDR` (veth /31 pool, default
-`169.254.100.0/23`), `-wait DUR` (substrate wait, default 30s).
+`169.254.100.0/23`), `-wait DUR` (substrate wait, default 30s), `-any-ns`
+(run inside a non-init network namespace, treating it as main).
+
+`run`/`up`/`nanny`/`down` refuse to start unless the current network
+namespace is init's (PID 1): "main" is wherever nsm itself sits, so an
+accidental `ip netns exec X nsm run ...` would build every main-side object
+(veth, mount routes, collision checks, NAT) inside X — and `ip netns add`
+from that context registers half-visible names. `status` only warns; `nsm
+exec` is not checked (setns by name works from anywhere). `-any-ns` opts out
+for deployments where the current namespace is the intended main.
 
 ### What `run` does before the transport
 

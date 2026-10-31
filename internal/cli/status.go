@@ -19,6 +19,11 @@ import (
 // connection directories, /run/netns, the links and routes in each ns and
 // the pidfiles.
 func (g *globals) cmdStatus(names []string) int {
+	if !g.anyNS {
+		if err := netns.MainCheck(); err != nil {
+			fmt.Fprintf(g.err, "nsm: warning: %v; everything labelled \"main\" below is the wrong namespace\n", err)
+		}
+	}
 	s := quiet(g.s)
 	rc := 0
 	all := len(names) == 0

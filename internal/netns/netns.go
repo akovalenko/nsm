@@ -5,6 +5,7 @@ package netns
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,11 +40,55 @@ func ID(ns string) (uint64, error) {
 	if ns == sys.Main {
 		p = "/proc/self/ns/net"
 	}
-	var st syscall.Stat_t
-	if err := syscall.Stat(p, &st); err != nil {
+	ino, err := nsInode(p)
+	if err != nil {
 		return 0, fmt.Errorf("netns %s: %w", ns, err)
 	}
+	return ino, nil
+}
+
+func nsInode(path string) (uint64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, err
+	}
 	return st.Ino, nil
+}
+
+// Identify returns the name of the network namespace the process is in, or
+// "" when it matches no named namespace (what `ip netns identify $$` does).
+func Identify() string {
+	ino, err := nsInode("/proc/self/ns/net")
+	if err != nil {
+		return ""
+	}
+	ents, err := os.ReadDir(sys.NetnsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		if i, err := nsInode(filepath.Join(sys.NetnsDir, e.Name())); err == nil && i == ino {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+// MainCheck returns an error when the process sits in a network namespace
+// other than init's (PID 1): nsm addresses "main" as its own namespace, so
+// an accidental `ip netns exec X nsm run ...` would build all main-side
+// plumbing inside X, silently. Indicators that cannot be read count as
+// main — the check never blocks what it cannot see.
+func MainCheck() error {
+	self, err1 := nsInode("/proc/self/ns/net")
+	init, err2 := nsInode("/proc/1/ns/net")
+	if err1 != nil || err2 != nil || self == init {
+		return nil
+	}
+	if who := Identify(); who != "" {
+		return fmt.Errorf("current network namespace is %q, not the init (main) one", who)
+	}
+	return errors.New("current network namespace is not the init (main) one")
 }
 
 // Ensure creates the namespace if missing and brings its loopback up.

@@ -24,6 +24,9 @@ func (g *globals) cmdRun(name string) int {
 	if err := g.needRoot("run"); err != nil {
 		return g.fail("%v", err)
 	}
+	if err := g.requireMain("run"); err != nil {
+		return g.fail("%v", err)
+	}
 	c, err := conn.Load(g.confdir, name)
 	if err != nil {
 		return g.fail("%v", err)

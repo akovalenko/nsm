@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akovalenko/nsm/internal/conn"
+	"github.com/akovalenko/nsm/internal/netns"
 	"github.com/akovalenko/nsm/internal/sys"
 )
 
@@ -38,6 +39,10 @@ flags:
   -n           dry run: print state changes instead of making them
   -pool CIDR   veth /31 pool (default 169.254.100.0/23)
   -wait DUR    how long 'run' waits for its substrate (default 30s)
+  -any-ns      allow running outside the init network namespace (the current
+               one is then treated as main; without this run/up/nanny/down
+               refuse — an accidental "ip netns exec X nsm run ..." would
+               build all main-side plumbing inside X)
 `
 
 // Version is set by the build (-ldflags "-X ...cli.Version=...").
@@ -47,6 +52,7 @@ type globals struct {
 	confdir string
 	pool    netip.Prefix
 	wait    time.Duration
+	anyNS   bool
 	s       *sys.Sys
 	out     io.Writer
 	err     io.Writer
@@ -64,6 +70,7 @@ func Main(args []string) int {
 	fs.StringVar(&g.confdir, "C", confdir, "")
 	fs.BoolVar(&g.s.Verbose, "v", os.Getenv("NSM_VERBOSE") == "1", "")
 	fs.BoolVar(&g.s.DryRun, "n", false, "")
+	fs.BoolVar(&g.anyNS, "any-ns", false, "")
 	pool := fs.String("pool", conn.DefaultPool, "")
 	fs.DurationVar(&g.wait, "wait", 30*time.Second, "")
 	if err := fs.Parse(args); err != nil {
@@ -126,6 +133,22 @@ func (g *globals) fail(format string, a ...any) int {
 func (g *globals) needRoot(what string) error {
 	if os.Geteuid() != 0 && !g.s.DryRun {
 		return fmt.Errorf("%s needs root (or -n to see the plan)", what)
+	}
+	return nil
+}
+
+// requireMain guards the mutating commands against running inside a foreign
+// network namespace: "main" is wherever nsm itself sits, so an accidental
+// `ip netns exec X nsm run ...` would build every main-side object (veth,
+// mount routes, collision checks, NAT) inside X — and `ip netns add` from
+// that rslave mount ns registers half-visible names on top. -any-ns opts
+// out for deployments where the current namespace IS the intended main.
+func (g *globals) requireMain(cmd string) error {
+	if g.anyNS {
+		return nil
+	}
+	if err := netns.MainCheck(); err != nil {
+		return fmt.Errorf("%s: %v (use -any-ns to treat the current namespace as main)", cmd, err)
 	}
 	return nil
 }

@@ -64,6 +64,9 @@ func (g *globals) selfArgs(cmd, name string) []string {
 	if g.s.Verbose {
 		args = append(args, "-v")
 	}
+	if g.anyNS {
+		args = append(args, "-any-ns")
+	}
 	return append(args, cmd, name)
 }
 
@@ -71,6 +74,9 @@ func (g *globals) selfArgs(cmd, name string) []string {
 // /run/nsm/<name>/log.
 func (g *globals) cmdUp(name string) int {
 	if err := g.needRoot("up"); err != nil {
+		return g.fail("%v", err)
+	}
+	if err := g.requireMain("up"); err != nil {
 		return g.fail("%v", err)
 	}
 	if _, err := conn.Load(g.confdir, name); err != nil {
@@ -115,6 +121,9 @@ func (g *globals) cmdNanny(name string) int {
 	if err := g.needRoot("nanny"); err != nil {
 		return g.fail("%v", err)
 	}
+	if err := g.requireMain("nanny"); err != nil {
+		return g.fail("%v", err)
+	}
 	if _, err := conn.Load(g.confdir, name); err != nil {
 		return g.fail("%v", err)
 	}
@@ -145,6 +154,9 @@ func (g *globals) cmdNanny(name string) int {
 // resolv.conf override and volatile state. Idempotent.
 func (g *globals) cmdDown(name string) int {
 	if err := g.needRoot("down"); err != nil {
+		return g.fail("%v", err)
+	}
+	if err := g.requireMain("down"); err != nil {
 		return g.fail("%v", err)
 	}
 	c, err := conn.Load(g.confdir, name)
