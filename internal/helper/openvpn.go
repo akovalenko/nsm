@@ -146,7 +146,7 @@ func OpenVPNUp(s *sys.Sys, e Env, getenv func(string) string) error {
 			return err
 		}
 	}
-	if e.Meta.Resolv == "" {
+	if len(e.Meta.Resolv) == 0 {
 		if rc := pushedResolv(getenv); rc != "" {
 			if err := netns.WriteResolv(s, ns, rc); err != nil {
 				return err

@@ -208,7 +208,7 @@ func RunWG(s *sys.Sys, e Env, confPath string) error {
 	if _, err := s.IP(ns, "-4", "route", "replace", "default", "dev", ifname); err != nil {
 		return err
 	}
-	if e.Meta.Resolv == "" && len(wc.DNS) > 0 {
+	if len(e.Meta.Resolv) == 0 && len(wc.DNS) > 0 {
 		var rc strings.Builder
 		for _, d := range wc.DNS {
 			if _, err := netip.ParseAddr(d); err == nil {

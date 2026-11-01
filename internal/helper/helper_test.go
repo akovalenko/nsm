@@ -161,7 +161,7 @@ func TestOpenVPNUpSubnetTopology(t *testing.T) {
 func TestOpenVPNUpNet30AndRestart(t *testing.T) {
 	f := sys.NewFake()
 	// Device already in the connection ns (restart with persist-tun): no move.
-	e := Env{Name: "c", NS: "c", Meta: conn.Meta{MTU: 1300, Resolv: "nameserver 1.1.1.1"}}
+	e := Env{Name: "c", NS: "c", Meta: conn.Meta{MTU: 1300, Resolv: []string{"nameserver 1.1.1.1"}}}
 	err := OpenVPNUp(f.Sys, e, env(map[string]string{
 		"dev": "tun3", "tun_mtu": "1500",
 		"ifconfig_local": "10.9.0.6", "ifconfig_remote": "10.9.0.5",

@@ -17,6 +17,9 @@ expose="10.48.0.0/16,10.10.0.5/24 10.48.0.9/16"   # commas, spaces, dup collapse
 expose=192.168.90.0/24
 dns='eputs.spd:10.48.1.53,corp.example:10.10.0.2'
 resolv="nameserver 1.1.1.1"
+resolv="nameserver 1.0.0.1"   # dup below collapses
+resolv="options edns0 trust-ad"
+resolv="nameserver 1.0.0.1"
 mtu=1370
 `
 	m, err := ParseMeta(strings.NewReader(src))
@@ -34,11 +37,12 @@ mtu=1370
 		m.DNS[1].Domain != "corp.example" {
 		t.Errorf("dns = %+v", m.DNS)
 	}
-	if m.Resolv != "nameserver 1.1.1.1" || m.MTU != 1370 {
+	if !slices.Equal(m.Resolv, []string{"nameserver 1.1.1.1", "nameserver 1.0.0.1", "options edns0 trust-ad"}) || m.MTU != 1370 {
 		t.Errorf("resolv=%q mtu=%d", m.Resolv, m.MTU)
 	}
 	c := &Conn{Name: "t", Dir: t.TempDir(), Meta: m}
-	if rc, err := c.ResolvConf(); err != nil || rc != "nameserver 1.1.1.1\n" {
+	wantRC := "nameserver 1.1.1.1\nnameserver 1.0.0.1\noptions edns0 trust-ad\n"
+	if rc, err := c.ResolvConf(); err != nil || rc != wantRC {
 		t.Errorf("ResolvConf = %q, %v", rc, err)
 	}
 }
@@ -54,7 +58,7 @@ func TestResolvConf(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mk := func(v string) *Conn { return &Conn{Name: "t", Dir: dir, Meta: Meta{Resolv: v}} }
+	mk := func(v ...string) *Conn { return &Conn{Name: "t", Dir: dir, Meta: Meta{Resolv: v}} }
 
 	// relative path with a slash resolves against the connection dir
 	rc, err := mk("conf/resolv.conf").ResolvConf()
@@ -81,6 +85,11 @@ func TestResolvConf(t *testing.T) {
 	}
 	if rc, err := mk("").ResolvConf(); err != nil || rc != "" {
 		t.Errorf("empty: %q, %v", rc, err)
+	}
+	// several pieces accumulate in order, files and literals mixed
+	rc, err = mk("nameserver 9.9.9.9", "conf/resolv.conf", "options rotate").ResolvConf()
+	if err != nil || rc != "nameserver 9.9.9.9\n"+content+"\noptions rotate\n" {
+		t.Errorf("multi: %q, %v", rc, err)
 	}
 }
 

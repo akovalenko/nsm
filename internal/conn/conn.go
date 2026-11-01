@@ -43,7 +43,7 @@ type Meta struct {
 	Rides  string         // netns carrying the transport socket; sys.Main by default
 	Expose []netip.Prefix // prefixes to mount into main
 	DNS    []DNSEntry     // domain-scoped forwarders to publish into main dnsmasq
-	Resolv string         // resolv.conf for this connection's ns (literal or file content)
+	Resolv []string       // resolv.conf pieces (literal directives or file paths), in order
 	MTU    int            // payload interface MTU override
 }
 
@@ -174,7 +174,9 @@ func ParseMeta(r io.Reader) (Meta, error) {
 				m.DNS = append(m.DNS, DNSEntry{Domain: strings.TrimSuffix(dom, "."), Server: a})
 			}
 		case "resolv":
-			m.Resolv = val
+			if val != "" && !slices.Contains(m.Resolv, val) {
+				m.Resolv = append(m.Resolv, val)
+			}
 		case "mtu":
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 576 || n > 65535 {
@@ -236,38 +238,44 @@ func unquote(v string) (string, error) {
 
 // ResolvConf returns the resolv.conf text the connection's ns should get
 // from meta, or "" when meta says nothing (the transport may then supply
-// pushed DNS). A value containing "/" names a file — absolute, or relative
-// to the connection directory (`resolv=conf/resolv.conf`) — used verbatim;
-// anything else must be resolv.conf text itself (the meta parser is
-// line-based, so that means one directive: a nameserver or options line).
+// pushed DNS). Multiple resolv= lines accumulate in order, literal values
+// and file paths freely mixed. A value containing "/" names a file —
+// absolute, or relative to the connection directory
+// (`resolv=conf/resolv.conf`) — used verbatim; anything else must be
+// resolv.conf text itself (the meta parser is line-based, so that means one
+// directive: a nameserver, search, options... line).
 func (c *Conn) ResolvConf() (string, error) {
-	v := c.Meta.Resolv
-	if v == "" {
-		return "", nil
-	}
-	if strings.Contains(v, "/") {
-		p := v
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(c.Dir, p)
+	var b strings.Builder
+	for _, v := range c.Meta.Resolv {
+		if v == "" {
+			continue
 		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return "", fmt.Errorf("resolv=%s: %w", v, err)
+		if strings.Contains(v, "/") {
+			p := v
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(c.Dir, p)
+			}
+			fc, err := os.ReadFile(p)
+			if err != nil {
+				return "", fmt.Errorf("resolv=%s: %w", v, err)
+			}
+			b.WriteString(ensureNL(string(fc)))
+			continue
 		}
-		return ensureNL(string(b)), nil
+		w := v
+		if i := strings.IndexAny(v, " \t"); i >= 0 {
+			w = v[:i]
+		}
+		switch w {
+		case "nameserver", "search", "domain", "options", "sortlist":
+			b.WriteString(ensureNL(v))
+		case "#":
+			b.WriteString(ensureNL(v))
+		default:
+			return "", fmt.Errorf("resolv=%q: want resolv.conf text (nameserver/search/options...) or a file path containing \"/\"", v)
+		}
 	}
-	w := v
-	if i := strings.IndexAny(v, " \t"); i >= 0 {
-		w = v[:i]
-	}
-	switch w {
-	case "nameserver", "search", "domain", "options", "sortlist":
-		return ensureNL(v), nil
-	}
-	if strings.HasPrefix(v, "#") {
-		return ensureNL(v), nil
-	}
-	return "", fmt.Errorf("resolv=%q: want resolv.conf text (nameserver/search/options...) or a file path containing \"/\"", v)
+	return b.String(), nil
 }
 
 func ensureNL(s string) string {

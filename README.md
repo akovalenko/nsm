@@ -34,9 +34,11 @@ rides=lappy
 # IPv4 prefixes to mount into main: space- or comma-separated CIDRs,
 # multiple expose= lines accumulate, duplicates collapse
 expose="10.48.0.0/16 10.10.0.0/24"
-# resolv.conf for this connection's netns: literal text (one directive) or a
-# file path — absolute, or relative to the connection dir, with "/" in it
+# resolv.conf for this connection's netns: literal directives and/or file
+# paths (absolute, or relative to the connection dir when they contain "/");
+# multiple resolv= lines accumulate in order, duplicates collapse
 resolv="nameserver 1.1.1.1"
+resolv="options edns0 trust-ad"
 # payload interface MTU override
 mtu=1370
 # reserved for the dnsmasq integration (parsed, not yet applied)
