@@ -32,17 +32,10 @@ var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,11}$`)
 // ValidName reports whether name may be used as a connection name.
 func ValidName(name string) bool { return nameRE.MatchString(name) && name != sys.Main }
 
-// DNSEntry is one `domain:server` pair of the dns= key.
-type DNSEntry struct {
-	Domain string
-	Server netip.Addr
-}
-
 // Meta is the parsed `meta` stanza; zero values are the defaults.
 type Meta struct {
 	Rides  string         // netns carrying the transport socket; sys.Main by default
 	Expose []netip.Prefix // prefixes to mount into main
-	DNS    []DNSEntry     // domain-scoped forwarders to publish into main dnsmasq
 	Resolv []string       // resolv.conf pieces (literal directives or file paths), in order
 	MTU    int            // payload interface MTU override
 }
@@ -161,18 +154,6 @@ func ParseMeta(r io.Reader) (Meta, error) {
 					m.Expose = append(m.Expose, p)
 				}
 			}
-		case "dns":
-			for _, f := range metaFields(val) {
-				dom, srv, ok := strings.Cut(f, ":")
-				if !ok || dom == "" {
-					return m, fmt.Errorf("line %d: dns %q: want domain:server", ln, f)
-				}
-				a, err := netip.ParseAddr(srv)
-				if err != nil {
-					return m, fmt.Errorf("line %d: dns %q: %v", ln, f, err)
-				}
-				m.DNS = append(m.DNS, DNSEntry{Domain: strings.TrimSuffix(dom, "."), Server: a})
-			}
 		case "resolv":
 			if val != "" && !slices.Contains(m.Resolv, val) {
 				m.Resolv = append(m.Resolv, val)
@@ -190,8 +171,7 @@ func ParseMeta(r io.Reader) (Meta, error) {
 	return m, sc.Err()
 }
 
-// metaFields splits list-valued meta values: commas and whitespace, both,
-// like dns= has always done.
+// metaFields splits list-valued meta values on commas and whitespace, both.
 func metaFields(v string) []string {
 	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
 }

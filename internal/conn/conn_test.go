@@ -15,7 +15,6 @@ func TestParseMeta(t *testing.T) {
 rides=lappy
 expose="10.48.0.0/16,10.10.0.5/24 10.48.0.9/16"   # commas, spaces, dup collapsed
 expose=192.168.90.0/24
-dns='eputs.spd:10.48.1.53,corp.example:10.10.0.2'
 resolv="nameserver 1.1.1.1"
 resolv="nameserver 1.0.0.1"   # dup below collapses
 resolv="options edns0 trust-ad"
@@ -32,10 +31,6 @@ mtu=1370
 	want := []netip.Prefix{netip.MustParsePrefix("10.48.0.0/16"), netip.MustParsePrefix("10.10.0.0/24"), netip.MustParsePrefix("192.168.90.0/24")}
 	if !slices.Equal(m.Expose, want) {
 		t.Errorf("expose = %v, want %v", m.Expose, want)
-	}
-	if len(m.DNS) != 2 || m.DNS[0].Domain != "eputs.spd" || m.DNS[0].Server != netip.MustParseAddr("10.48.1.53") ||
-		m.DNS[1].Domain != "corp.example" {
-		t.Errorf("dns = %+v", m.DNS)
 	}
 	if !slices.Equal(m.Resolv, []string{"nameserver 1.1.1.1", "nameserver 1.0.0.1", "options edns0 trust-ad"}) || m.MTU != 1370 {
 		t.Errorf("resolv=%q mtu=%d", m.Resolv, m.MTU)

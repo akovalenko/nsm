@@ -41,8 +41,6 @@ resolv="nameserver 1.1.1.1"
 resolv="options edns0 trust-ad"
 # payload interface MTU override
 mtu=1370
-# reserved for the dnsmasq integration (parsed, not yet applied)
-dns="eputs.spd:10.48.1.53"
 ```
 
 ### The `run` contract
@@ -220,8 +218,7 @@ version.
 ## Status
 
 v0: run/up/down/status/exec, wg and openvpn helpers, mounts with collision
-refusal, nanny. Planned: dnsmasq integration (`dns=`, with automatic /32
-mounts of the forwarders), orphan cleanup, `expose=auto`, IPv6, and an
+refusal, nanny. Planned: orphan cleanup, `expose=auto`, IPv6, and an
 unprivileged `nsm exec` (connection namespaces owned by a per-user user
 namespace).
 
