@@ -143,11 +143,17 @@ func ParseMeta(r io.Reader) (Meta, error) {
 		case "expose":
 			for _, f := range metaFields(val) {
 				p, err := netip.ParsePrefix(f)
-				if err != nil {
-					return m, fmt.Errorf("line %d: expose %q: %v", ln, f, err)
-				}
-				if !p.Addr().Is4() {
-					return m, fmt.Errorf("line %d: expose %q: IPv4 only for now", ln, f)
+				if err == nil {
+					if !p.Addr().Is4() {
+						return m, fmt.Errorf("line %d: expose %q: IPv4 only for now", ln, f)
+					}
+				} else {
+					// a bare IPv4 address is shorthand for a /32 host mount
+					a, aerr := netip.ParseAddr(f)
+					if aerr != nil || !a.Is4() {
+						return m, fmt.Errorf("line %d: expose %q: %v", ln, f, err)
+					}
+					p = netip.PrefixFrom(a, 32)
 				}
 				p = p.Masked()
 				if !slices.Contains(m.Expose, p) {
