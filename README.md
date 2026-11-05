@@ -183,7 +183,13 @@ instance unless told otherwise (`--no-remote`, separate profile).
 Pick one:
 
 - **systemd**: see `examples/nsm@.service` (`ExecStart=nsm run %i`,
-  `Restart=always`). `systemctl enable nsm@lappy nsm@client59`.
+  `ExecStop=nsm down %i`, `Restart=always`). `systemctl enable nsm@lappy
+  nsm@client59`. systemd runs `ExecStop` only on an explicit stop/restart —
+  never when the process exits on its own — so reconnect cycles keep the
+  skeleton (netns, veth, mounts) and `nsm run` reconverges, while
+  `systemctl stop` tears the whole connection down. One gap: a stop that
+  arrives while the unit is waiting out `RestartSec` runs no `ExecStop`
+  (nothing is running) — finish with a manual `nsm down <name>`.
 - **runit/s6**: `exec nsm run <name>` as the service's run script.
 - **nothing**: `nsm up <name>` detaches a nanny with exponential backoff
   (1s doubling to 60s, reset after a run that lasted 10s), logging to

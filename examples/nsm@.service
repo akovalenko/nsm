@@ -1,7 +1,8 @@
 # systemd adapter for nsm connections: systemctl enable --now nsm@lappy
-# nsm run is the whole contract; systemd only restarts it. The skeleton
-# (netns, veth, mounts) survives restarts on purpose; `nsm down <name>`
-# after `systemctl stop` removes it.
+# nsm run is the whole contract; systemd only restarts it. When the process
+# exits on its own (reconnect cycle), ExecStop does not run: the skeleton
+# (netns, veth, mounts) survives and `nsm run` reconverges. An explicit
+# stop/restart runs ExecStop, which tears the whole connection down.
 [Unit]
 Description=nsm connection %i
 After=network-online.target
@@ -10,6 +11,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/nsm run %i
+ExecStop=/usr/local/bin/nsm down %i
+TimeoutStopSec=20
 Restart=always
 RestartSec=2
 
