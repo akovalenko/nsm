@@ -218,6 +218,11 @@ func which(name string) string {
 	return name
 }
 
+// Which resolves a bare tool name to an absolute path the way Sys does
+// (PATH first, then the well-known directories): for callers that exec a
+// command themselves instead of going through a Sys method.
+func Which(name string) string { return which(name) }
+
 // Quote renders argv for humans in the plan/verbose output.
 func Quote(argv []string) string {
 	var b strings.Builder

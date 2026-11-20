@@ -89,6 +89,45 @@ handler is idempotent, so `--up-restart`/`--persist-tun` reconnects are fine.
 Anything else is a `run` script of your own: it only has to end with the
 interface in `$CONN_NS` and a foreground process.
 
+## fd passing: `nsm tunfd`
+
+Sometimes the tunnel daemon must live in one namespace while its device —
+addresses, default route — sits inside another: e.g. a calltun acceptor
+keeps ssh signaling and ICE in the underlay namespace, while everything
+else in the target namespace already defaults into the tunnel. For such a
+static topology `nsm tunfd` is a pre-exec wrapper for the daemon's unit:
+
+```
+ExecStart=/usr/local/bin/nsm tunfd --netns censored --dev tun44 \
+          --uid calltun --fd-env CALLTUN_FD --mtu-env CALLTUN_MTU -- \
+          /usr/local/bin/calltun accept --link ct0 --dev tun44
+```
+
+It attaches to the persistent device **inside** `--netns` (created and
+configured there by the host), reads the device MTU *there* —
+`/sys/class/net` is namespace-tagged, so the daemon outside cannot —
+returns to the original namespace, drops to `--uid` (supplementary groups
+cleared), clears CLOEXEC on the single delivered descriptor and execs the
+command with the fd number and the MTU in the environment. The env names
+are parameters, so any tunnel daemon can consume them, not just calltun
+(which reads `CALLTUN_FD`/`CALLTUN_MTU`).
+
+Why exec-inheritance rather than SCM_RIGHTS over a socket: with a static
+topology a broker buys nothing. The unit replays the whole chain by
+itself on every `Restart=always`, the fd lives exactly as long as the
+process, and PID tracking survives (exec replaces the image in the same
+PID). Restarts do not overlap through systemd (the new process starts
+only after the old one exited, closing its fd); a hand-run attach while
+the daemon lives fails loudly with EBUSY — the kernel refuses a second
+queue on a device without `IFF_MULTI_QUEUE` — and the next retry
+converges. A future dynamic topology would deliver the same `CALLTUN_FD`
+by SCM_RIGHTS instead, with no daemon-side change.
+
+`--netns` takes a `/run/netns/...` path or a bare name (`main` = stay in
+the current namespace, drop-and-exec only). `--mode` defaults from the
+device name prefix; `--uid` takes a name or a numeric uid and is optional
+(no drop without it).
+
 ## Commands
 
 ```

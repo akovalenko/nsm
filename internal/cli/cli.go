@@ -31,6 +31,10 @@ commands (root):
   helper wg <conf>           (from a run script) bring up and hold WireGuard
   helper openvpn <ovpn> [-- openvpn args]
                              (from a run script) run openvpn with the fd trick
+  tunfd [flags] -- cmd       (from a systemd unit) attach a persistent tun/tap
+                             in another netns, drop privileges, exec cmd with
+                             the fd inherited (--netns/--dev/--uid/--fd-env/
+                             --mtu-env; see README "fd passing")
   version
 
 flags:
@@ -103,6 +107,8 @@ func Main(args []string) int {
 		return g.cmdExec(rest, true)
 	case "helper":
 		return g.cmdHelper(rest)
+	case "tunfd":
+		return g.cmdTunfd(rest)
 	case "version":
 		fmt.Fprintln(g.out, "nsm", Version)
 		return 0
