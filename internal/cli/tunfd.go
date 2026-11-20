@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -177,7 +178,7 @@ func tunfdExec(nsPath, dev string, tap bool, drop *user.User, path string, argv,
 	mtu, err := readDevMTU(dev)
 	if err != nil {
 		unix.Close(tfd)
-		return fmt.Errorf("attach %s: %w", dev, err)
+		return fmt.Errorf("mtu %s: %w", dev, err)
 	}
 
 	if err := unix.Setns(back, unix.CLONE_NEWNET); err != nil {
@@ -215,7 +216,13 @@ func tunfdExec(nsPath, dev string, tap bool, drop *user.User, path string, argv,
 	if mtuEnv != "" {
 		env = setEnv(env, mtuEnv, strconv.Itoa(mtu))
 	}
-	return syscall.Exec(path, argv, env)
+	if err := syscall.Exec(path, argv, env); err != nil {
+		if drop != nil {
+			return fmt.Errorf("exec %s as %s: %w (the binary and every parent directory must be executable by the dropped user — not under a private /root)", path, drop.Username, err)
+		}
+		return fmt.Errorf("exec %s: %w", path, err)
+	}
+	return nil
 }
 
 // tunSetIFF attaches fd to the named persistent device inside the current
@@ -242,16 +249,22 @@ func tunSetIFF(fd int, dev string, tap bool) error {
 	return nil
 }
 
-// readDevMTU reads the device MTU from sysfs, valid only inside the
-// namespace that owns the device.
+// readDevMTU reads the device MTU by netlink query, valid inside the
+// namespace that owns the device. /sys/class/net cannot be used from a
+// setns'd thread: sysfs netns tagging is scoped to the MOUNT (the
+// mounter's namespace), not the reader, so after a bare setns the old
+// namespace's devices are still what shows — `ip netns exec` only works
+// here because it remounts sysfs per namespace. Netlink sockets instead
+// belong to the namespace their creator was in, and the creator is the
+// pinned thread, currently inside the target (bench-verified the hard
+// way: the sysfs read saw no device at all).
 func readDevMTU(dev string) (int, error) {
-	b, err := os.ReadFile("/sys/class/net/" + dev + "/mtu")
+	iface, err := net.InterfaceByName(dev)
 	if err != nil {
 		return 0, err
 	}
-	mtu, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || mtu <= 0 {
-		return 0, fmt.Errorf("sysfs mtu %q: not a number", string(b))
+	if iface.MTU <= 0 {
+		return 0, fmt.Errorf("%s: netlink reports MTU %d", dev, iface.MTU)
 	}
-	return mtu, nil
+	return iface.MTU, nil
 }

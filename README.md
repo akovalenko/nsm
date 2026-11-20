@@ -104,13 +104,16 @@ ExecStart=/usr/local/bin/nsm tunfd --netns censored --dev tun44 \
 ```
 
 It attaches to the persistent device **inside** `--netns` (created and
-configured there by the host), reads the device MTU *there* —
-`/sys/class/net` is namespace-tagged, so the daemon outside cannot —
-returns to the original namespace, drops to `--uid` (supplementary groups
-cleared), clears CLOEXEC on the single delivered descriptor and execs the
-command with the fd number and the MTU in the environment. The env names
-are parameters, so any tunnel daemon can consume them, not just calltun
-(which reads `CALLTUN_FD`/`CALLTUN_MTU`).
+configured there by the host), reads the device MTU *there* by netlink
+query — sysfs cannot be used after a bare setns: its netns tagging is
+scoped to the mount (the mounter's namespace), not the reader, so the
+old namespace's devices are still what shows; `ip netns exec` only works
+because it remounts sysfs — then returns to the original namespace,
+drops to `--uid` (supplementary groups cleared), clears CLOEXEC on the
+single delivered descriptor and execs the command with the fd number and
+the MTU in the environment. The env names are parameters, so any tunnel
+daemon can consume them, not just calltun (which reads
+`CALLTUN_FD`/`CALLTUN_MTU`).
 
 Why exec-inheritance rather than SCM_RIGHTS over a socket: with a static
 topology a broker buys nothing. The unit replays the whole chain by
@@ -125,8 +128,10 @@ by SCM_RIGHTS instead, with no daemon-side change.
 
 `--netns` takes a `/run/netns/...` path or a bare name (`main` = stay in
 the current namespace, drop-and-exec only). `--mode` defaults from the
-device name prefix; `--uid` takes a name or a numeric uid and is optional
-(no drop without it).
+device name prefix. `--uid` takes a name or a numeric uid and is optional
+(no drop without it); the exec'd binary and every parent directory must
+be executable by that user — a binary under a private `/root` fails the
+exec with EACCES after the drop (the error message says so).
 
 ### The full recipe: an ns-split connection (`examples/ct44`)
 
