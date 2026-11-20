@@ -1,0 +1,37 @@
+#!/bin/sh
+# calltun initiator, ns-split: the daemon (ssh signaling, ICE) stays with
+# the run script in the underlay; the device it serves -- with the address
+# and the default route -- lives inside the connection namespace, where
+# the applications go (`nsm exec ct44 ...`). The peer side runs the stock
+# calltun-accept@.service, or mirrors this recipe.
+#
+# Convergence, not teardown: a restart re-asserts state with replace
+# semantics and never deletes the device, so inner TCP sessions ride out
+# link flaps exactly as on a plain calltun host (carrier still means
+# "daemon attached"). Full teardown is `nsm down`'s job -- explicit stop
+# only, never a reconnect cycle.
+#
+# Several links on one host: pin ICE gathering per link with
+# CALLTUN_IF=<wan if> exported here (see the calltun README).
+set -e
+DEV=tun44
+
+# Socket dir for the peer's offer bridge: the daemon runs as `calltun`
+# after nsm tunfd drops, and cannot mkdir under root-owned /run itself.
+install -d -o calltun -g calltun /run/calltun
+
+# Persistent device inside $CONN_NS; add only if missing. No
+# delete-and-recreate: deleting the device would kill every TCP flow in
+# the namespace on each routine link flap (signaling fail, ICE fail,
+# consent timeout) -- turning recoverable blips into hard resets.
+ip -n "$CONN_NS" link show dev "$DEV" >/dev/null 2>&1 ||
+    ip -n "$CONN_NS" tuntap add dev "$DEV" mode tun
+ip -n "$CONN_NS" addr replace 10.231.44.1/24 dev "$DEV"
+ip -n "$CONN_NS" link set "$DEV" mtu 1370 up
+ip -n "$CONN_NS" -4 route replace default dev "$DEV"
+
+# Attach inside the ns, read the MTU there, come back, drop, exec:
+# the fd rides the exec; calltun learns it from CALLTUN_FD.
+exec nsm tunfd --netns "$CONN_NS" --dev "$DEV" --uid calltun \
+    --fd-env CALLTUN_FD --mtu-env CALLTUN_MTU -- \
+    /usr/local/bin/calltun up --link ct44 --dev "$DEV" --ssh cleanbox

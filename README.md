@@ -128,6 +128,30 @@ the current namespace, drop-and-exec only). `--mode` defaults from the
 device name prefix; `--uid` takes a name or a numeric uid and is optional
 (no drop without it).
 
+### The full recipe: an ns-split connection (`examples/ct44`)
+
+A bare `ExecStart=nsm tunfd …` unit suits one link; the idiomatic shape is
+a connection whose `run` script does the ip-level bring-up itself and then
+execs into `nsm tunfd` (see `examples/ct44/`): the daemon stays with the
+script in the underlay (`rides=main` — signaling and ICE must not move),
+the persistent device, its address and the default route live inside the
+connection namespace, and applications enter it with `nsm exec ct44 …`.
+With no `expose=` nothing is mounted into main: kill switch by
+construction, no policy routing needed.
+
+**Convergence, not teardown.** A reconnect cycle re-runs the script, which
+re-asserts addresses, MTU and routes with `replace` semantics and adds the
+device only if missing — it never deletes it. Inner TCP sessions then ride
+out link flaps exactly as on a plain (single-namespace) calltun host:
+carrier still means "daemon attached", and deleting the device instead
+would kill every TCP flow bound in the namespace on each routine flap.
+Full teardown belongs to `nsm down` (explicit stop / ExecStop), which
+removes the namespace together with the device. A restart loop *inside*
+the run script was considered and rejected: it would make the run script
+never exit (breaking the run contract), hide flap rates from the
+supervisor's restart accounting and rate limiting, and duplicate its
+backoff — all to skip five no-op ip commands.
+
 ## Commands
 
 ```

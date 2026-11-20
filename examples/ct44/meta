@@ -1,0 +1,5 @@
+# rides=main by default: ssh signaling and ICE must stay in the underlay.
+# No expose=: the underlay keeps its own view of the world; the tunneled
+# one lives inside the namespace (no veth, nothing mounted into main).
+# DNS inside the ns, resolved over the tunnel:
+resolv="nameserver 1.1.1.1"
