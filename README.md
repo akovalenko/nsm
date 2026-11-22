@@ -166,6 +166,7 @@ nsm down <name>      stop + tear down (veth, routes, netns, resolv.conf, state)
 nsm status [name..]  recomputed from the kernel; lists orphans too
 nsm exec <name> [-u user] cmd...
 nsm shell <name> [-u user]
+nsm enter <name> [cmd...]    sudo-facing exec: target pinned to $SUDO_UID
 nsm nanny <name>     the respawn loop itself, in the foreground
 ```
 
@@ -245,6 +246,30 @@ to its filesystem socket and works; a D-Bus `unix:abstract=` address does
 not), `127.0.0.1` is per-netns (local CUPS, proxies and dev servers are not
 reachable from inside), and browsers hand new windows to an already-running
 instance unless told otherwise (`--no-remote`, separate profile).
+
+### `nsm enter`: passwordless sudo for humans
+
+`sudo nsm enter office firefox` does what `nsm exec` does, but the target
+user is pinned to the sudo caller (`$SUDO_UID`) and the command line has
+**no flags at all**: no `-u` to become someone else, nothing before the
+name (sudoers anchors the first argument). With no command it starts the
+caller's login shell, so enter covers `shell` too. It works for any named
+namespace in `/run/netns`, not just nsm connections — the drop is always to
+the caller themself, so there is nothing to escalate with.
+
+One sudoers line then suffices:
+
+```
+anton ALL=(root) NOPASSWD: /usr/local/bin/nsm enter *
+```
+
+The safety rests on sudo itself: `env_reset` washes out a spoofed
+`SUDO_UID` and supplies the real one, so the pin cannot be faked from the
+invoking environment. Do not add `SETENV:` to the rule or keep `SUDO_UID`
+via `env_keep` — either would reopen that door. Desktop variables survive
+the same reset the other way: `enter` rebuilds `XDG_RUNTIME_DIR`,
+`WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` from `/run/user/<uid>`
+when they are missing (that is `exec`'s `userEnv`, shared).
 
 ## Supervision
 

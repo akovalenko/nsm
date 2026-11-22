@@ -49,6 +49,50 @@ func (g *globals) cmdExec(args []string, shell bool) int {
 	if err != nil {
 		return g.fail("exec: %v", err)
 	}
+	return g.execAs(name, cmdline, target, "exec", shell)
+}
+
+// cmdEnter is exec for sudo callers, with no command line to reshape
+// privileges: the target user is pinned to $SUDO_UID, so one passwordless
+// sudoers line lets a user into any namespace without also letting them
+// become anyone else (sudoers wildcards cannot express "any args but -u",
+// and exec's -u is exactly the hole):
+//
+//	anton ALL=(root) NOPASSWD: /usr/local/bin/nsm enter *
+//
+// sudo's env_reset both washes out a spoofed $SUDO_UID and supplies the real
+// one; the rule must not carry SETENV: and SUDO_UID must not be in env_keep.
+// No command means the caller's login shell, so enter covers shell as well.
+// Started without sudo there is no caller to pin: refused, root has exec.
+func (g *globals) cmdEnter(args []string) int {
+	if len(args) == 0 {
+		return g.fail("enter: want <name> [cmd...]")
+	}
+	name := args[0]
+	cmdline := args[1:]
+	if !conn.ValidName(name) {
+		return g.fail("enter: invalid connection name %q", name)
+	}
+	if os.Geteuid() != 0 {
+		return g.fail("enter needs root: sudo nsm enter %s ...", name)
+	}
+	if !netns.Exists(name) {
+		return g.fail("enter: netns %s does not exist (connection not up?)", name)
+	}
+	uid := os.Getenv("SUDO_UID")
+	if uid == "" {
+		return g.fail("enter: no sudo caller ($SUDO_UID unset): the target user would not be pinned; as root, use exec")
+	}
+	target, err := user.LookupId(uid)
+	if err != nil {
+		return g.fail("enter: %v", err)
+	}
+	return g.execAs(name, cmdline, target, "enter", len(cmdline) == 0)
+}
+
+// execAs is the tail shared by exec, shell and enter: resolve the login shell
+// when asked for one, then hand the command to enter().
+func (g *globals) execAs(name string, cmdline []string, target *user.User, verb string, shell bool) int {
 	if shell {
 		if len(cmdline) != 0 {
 			return g.fail("shell takes no command")
@@ -64,7 +108,7 @@ func (g *globals) cmdExec(args []string, shell bool) int {
 		cmdline = []string{sh, "-l"}
 	}
 	if len(cmdline) == 0 {
-		return g.fail("exec: no command given")
+		return g.fail("%s: no command given", verb)
 	}
 	env := os.Environ()
 	env = setEnv(env, "NSM_CONN", name)
@@ -73,14 +117,14 @@ func (g *globals) cmdExec(args []string, shell bool) int {
 	}
 	path, err := exec.LookPath(cmdline[0])
 	if err != nil {
-		return g.fail("exec: %v", err)
+		return g.fail("%s: %v", verb, err)
 	}
 	if g.s.DryRun {
 		fmt.Fprintf(g.err, "+ setns %s; bind resolv.conf; setuid %s; exec %s\n", netns.Path(name), userName(target), strings.Join(cmdline, " "))
 		return 0
 	}
 	if err := enter(name, target, path, cmdline, env); err != nil {
-		return g.fail("exec: %v", err)
+		return g.fail("%s: %v", verb, err)
 	}
 	return 0 // not reached: enter execs
 }

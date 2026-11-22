@@ -27,6 +27,9 @@ commands (root):
   status [name...]           what the kernel says about each connection
   exec <name> [-u user] cmd  run cmd inside the connection's netns as user
   shell <name> [-u user]     same, with the user's login shell
+  enter <name> [cmd...]      sudo-facing exec: the target is pinned to the
+                             sudo caller ($SUDO_UID), no flags exist; no cmd
+                             means the caller's login shell
   nanny <name>               foreground respawn loop around 'nsm run'
   helper wg <conf>           (from a run script) bring up and hold WireGuard
   helper openvpn <ovpn> [-- openvpn args]
@@ -105,6 +108,8 @@ func Main(args []string) int {
 		return g.cmdExec(rest, false)
 	case "shell":
 		return g.cmdExec(rest, true)
+	case "enter":
+		return g.cmdEnter(rest)
 	case "helper":
 		return g.cmdHelper(rest)
 	case "tunfd":
