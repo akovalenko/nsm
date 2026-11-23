@@ -1,0 +1,6 @@
+# No transport and no expose=: nothing is mounted into main, and nothing
+# from this namespace leaves by a tunnel -- see run.
+# rides=main by default: the uplink is main itself.
+# DNS inside the namespace: a resolver reachable over the uplink (main's
+# own resolv.conf may point into a tunnel).
+resolv="nameserver 1.1.1.1"

@@ -157,6 +157,32 @@ never exit (breaking the run contract), hide flap rates from the
 supervisor's restart accounting and rate limiting, and duplicate its
 backoff — all to skip five no-op ip commands.
 
+### No transport at all: an uplink to main (`examples/bare`)
+
+A namespace that goes out by main's **physical** uplink while main itself
+rides a tunnel: `sudo nsm enter bare …` is the "not through the VPN"
+window. `run` builds a veth pair (`ve-<name>` in main, `eth0` in the
+namespace), a default route towards main, forwarding and NAT there, and
+the two rules that make it stick — ahead of the tunnel's own:
+
+```
+30200:  from all iif ve-bare lookup main
+30201:  from all iif ve-bare unreachable
+```
+
+The first routes by main's table. The second is what makes it a promise:
+a rule whose table holds no route is not final — evaluation goes on to
+the next rules, which here are the tunnel's — so without it an uplink
+that is gone sends bare quietly through the tunnel. With NetworkManager's
+default handling of a 0/0 WireGuard profile (`ip4-auto-default-route`:
+the default route in a private table, two rules selecting it, main's
+table keeping the physical one) that is the whole setup, and nsm itself
+is unchanged. What bare gets is main's table, mounts included: prefixes
+other connections expose are reachable, and so is anything main routes
+into a tunnel by an explicit route. `scripts/bench-bare.sh` is a rootless
+lab for the entire arrangement; the script's comments carry the details
+and the lifecycle.
+
 ## Commands
 
 ```
