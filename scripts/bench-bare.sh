@@ -229,6 +229,15 @@ check "bare -> isp2: main's table has no way, fails closed" "" "$(in_bare nc -w 
 check "bare resolv.conf" "nameserver 9.9.9.9" "$(in_bare sh -c 'head -1 /etc/resolv.conf')"
 check "main -> internet still seen as" peer=198.51.100.2 "$(probe 198.51.100.1)"
 
+step "substrate: a transport born in bare (rides=bare) rides the uplink"
+# The run script executes in the transport namespace, like any transport
+# that opens its socket there would; nsm run itself is the foreground.
+mkdir -p "$LAB/etc/rider"
+printf '%s\n' 'rides=bare' > "$LAB/etc/rider/meta"
+printf '%s\n' '#!/bin/sh' 'exec nc -w 3 198.51.100.1 9000' > "$LAB/etc/rider/run"
+chmod +x "$LAB/etc/rider/run"
+check "rides=bare -> internet seen as" peer=203.0.113.2 "$(nsm run rider 2>/dev/null)"
+
 step 'sudo-facing entry: nsm enter (target pinned to $SUDO_UID)'
 r=$(SUDO_UID=0 nsm enter bare nc -w 3 198.51.100.1 9000 2>&1)
 case $r in
