@@ -60,15 +60,21 @@ func (g *globals) printStatus(s *sys.Sys, c *conn.Conn) {
 	stateDir := filepath.Join(helper.RunDir, c.Name)
 	nannyPid := readPid(filepath.Join(stateDir, "nanny.pid"))
 	runPid := readPid(filepath.Join(stateDir, "run.pid"))
+	// With an uplink and no run script there is no transport: what is
+	// supervised is nsm run holding the skeleton.
+	state, how := "transport", "running"
+	if c.Meta.Uplink && !runnable(c.RunScript()) {
+		state, how = "uplink", "held by nsm run"
+	}
 	switch {
 	case runPid != 0 && nannyPid != 0:
-		fmt.Fprintf(w, "  transport: running (run pid %d, nanny pid %d)\n", runPid, nannyPid)
+		fmt.Fprintf(w, "  %s: %s (run pid %d, nanny pid %d)\n", state, how, runPid, nannyPid)
 	case runPid != 0:
-		fmt.Fprintf(w, "  transport: running (run pid %d, external supervisor)\n", runPid)
+		fmt.Fprintf(w, "  %s: %s (run pid %d, external supervisor)\n", state, how, runPid)
 	case nannyPid != 0:
-		fmt.Fprintf(w, "  transport: DOWN, nanny pid %d waiting to respawn\n", nannyPid)
+		fmt.Fprintf(w, "  %s: DOWN, nanny pid %d waiting to respawn\n", state, nannyPid)
 	default:
-		fmt.Fprintf(w, "  transport: DOWN\n")
+		fmt.Fprintf(w, "  %s: DOWN\n", state)
 	}
 	if !netns.Exists(c.NS()) {
 		fmt.Fprintf(w, "  netns: missing\n")
@@ -79,7 +85,8 @@ func (g *globals) printStatus(s *sys.Sys, c *conn.Conn) {
 		}
 		payload := 0
 		for _, l := range links {
-			if l.Ifname == "lo" || l.Ifname == expose.NSVeth {
+			// ve0 is plumbing for a mount; for an uplink it is the payload.
+			if l.Ifname == "lo" || (l.Ifname == expose.NSVeth && !c.Meta.Uplink) {
 				continue
 			}
 			payload++
@@ -110,6 +117,26 @@ func (g *globals) printStatus(s *sys.Sys, c *conn.Conn) {
 			fmt.Fprintf(w, "  default route: yes\n")
 		} else {
 			fmt.Fprintf(w, "  default route: NO\n")
+		}
+		if c.Meta.Uplink {
+			st, err := expose.UplinkStatus(s, c)
+			if err != nil {
+				fmt.Fprintf(w, "  uplink: %v\n", err)
+			} else {
+				fmt.Fprintf(w, "  veth: %s\n", st)
+			}
+		}
+	}
+	if c.Meta.Rule != nil {
+		st, err := expose.RuleStatus(s, c)
+		if err != nil {
+			fmt.Fprintf(w, "  rules: %v\n", err)
+		} else {
+			parts := make([]string, len(st))
+			for i, r := range st {
+				parts[i] = r.String()
+			}
+			fmt.Fprintf(w, "  rules: %s\n", strings.Join(parts, ", "))
 		}
 	}
 	if len(c.Meta.Expose) > 0 {

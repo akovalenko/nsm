@@ -20,7 +20,8 @@ supervisor restarts: systemd, runit/s6, or the built-in nanny.
 
 ```
 /etc/nsm/<name>/            (or -C <confdir>, or $NSM_CONFDIR)
-  run        mandatory, executable: starts the transport in the foreground
+  run        starts the transport in the foreground; executable, and
+             mandatory unless the connection has uplink= (no transport)
   meta       optional key=value stanza (see below)
   conf/      native artifacts: wg.conf, client.ovpn, certs... nsm never reads them
 ```
@@ -42,6 +43,13 @@ resolv="nameserver 1.1.1.1"
 resolv="options edns0 trust-ad"
 # payload interface MTU override
 mtu=1370
+# no transport at all: the namespace's uplink is main itself, through the
+# veth ("Uplink" below)
+uplink=main
+# policy rules in main for traffic arriving from the veth: lookup TABLE at
+# PRIORITY and an unreachable companion at PRIORITY+1; TABLE defaults to
+# main; absent: nsm installs no rules
+rule="30200:5300"
 ```
 
 ### The `run` contract
@@ -87,7 +95,9 @@ configures address, MTU, `default`, pushed routes and pushed DNS there. The
 handler is idempotent, so `--up-restart`/`--persist-tun` reconnects are fine.
 
 Anything else is a `run` script of your own: it only has to end with the
-interface in `$CONN_NS` and a foreground process.
+interface in `$CONN_NS` and a foreground process. Or no run script at all:
+a connection with `uplink=` has no transport to start, and `nsm run` holds
+it by itself (below).
 
 ## fd passing: `nsm tunfd`
 
@@ -157,31 +167,45 @@ never exit (breaking the run contract), hide flap rates from the
 supervisor's restart accounting and rate limiting, and duplicate its
 backoff — all to skip five no-op ip commands.
 
-### No transport at all: an uplink to main (`examples/bare`)
+### Uplink: a connection with no transport (`examples/bare`)
 
-A namespace that goes out by main's **physical** uplink while main itself
-rides a tunnel: `sudo nsm enter bare …` is the "not through the VPN"
-window. `run` builds a veth pair (`ve-<name>` in main, `eth0` in the
-namespace), a default route towards main, forwarding and NAT there, and
-the two rules that make it stick — ahead of the tunnel's own:
+A connection with `uplink=main` has no transport. Its namespace's uplink is
+main itself: nsm builds the same veth a mount uses (`ve-<name>` in main,
+`ve0` in the namespace, a /31 from the pool), a default route towards main,
+NAT on main's side (the namespace's only address is link-local) and
+forwarding in main. The default route comes last, so nothing leaves the
+namespace before the rules below are in place. No `run` script is needed,
+and `expose=` is refused: the veth is either the way out of the namespace or
+a mount into main.
+
+By default nsm installs **no policy rules**: the namespace's traffic is
+routed exactly like main's own — under a full-tunnel setup, through the
+tunnel. `rule=PRIORITY[:TABLE]` is a shorthand for "out by TABLE, and by
+nothing else" (TABLE is `main` unless given):
 
 ```
 30200:  from all iif ve-bare lookup main
 30201:  from all iif ve-bare unreachable
 ```
 
-The first routes by main's table. The second is what makes it a promise:
-a rule whose table holds no route is not final — evaluation goes on to
-the next rules, which here are the tunnel's — so without it an uplink
-that is gone sends bare quietly through the tunnel. With NetworkManager's
-default handling of a 0/0 WireGuard profile (`ip4-auto-default-route`:
-the default route in a private table, two rules selecting it, main's
-table keeping the physical one) that is the whole setup, and nsm itself
-is unchanged. What bare gets is main's table, mounts included: prefixes
-other connections expose are reachable, and so is anything main routes
-into a tunnel by an explicit route. `scripts/bench-bare.sh` is a rootless
-lab for the entire arrangement; the script's comments carry the details
-and the lifecycle.
+The first rule routes by TABLE. The second is what makes it a promise: a
+rule whose table holds no route is not final — evaluation goes on to the
+next rules — so without it an uplink that is gone sends the namespace
+through the tunnel. The pair must sort before whatever rules send main's
+own traffic into a tunnel (NetworkManager puts its WireGuard pair at
+31006/31007 on the host the example was written for, next to the
+exemptions its profile carries at 30000/30100). nsm converges the pair from
+what the kernel has — a rule that is already right is not touched, rules
+left over from an older `rule=` value go, the unreachable companion is
+added first — and `nsm down` removes every rule that names the veth, which
+takes the user's own `iif ve-<name>` rules down with it: a rule that names
+a device is garbage once the device is gone. Leave `rule=` out and bring
+your own rules on any terms; nsm will not touch them.
+
+Use it as `sudo nsm enter bare …` for "not through the VPN", or as a
+substrate: `rides=bare` makes any tunnel's transport ride main's table by
+construction. `scripts/bench-bare.sh` is a rootless lab for the whole
+arrangement.
 
 ## Commands
 
@@ -217,8 +241,10 @@ for deployments where the current namespace is the intended main.
    and let the supervisor try again. **Start order never matters.**
 2. Ensures netns `<name>` with `lo` up, and `/etc/netns/<name>/resolv.conf`
    from `resolv=`.
-3. Applies `expose=` (below).
-4. Starts `run` in the `rides` namespace; then watches the substrate every
+3. Applies `expose=` (below); for a transport-less connection its uplink
+   and the shorthand rules (`uplink=`, `rule=`: above).
+4. Starts `run` in the `rides` namespace — or, with `uplink=` and no `run`
+   script, holds the connection itself; then watches the substrate every
    5s and **kills the transport and exits** when the substrate namespace is
    gone, was recreated, or lost its default route. The supervisor restarts,
    step 1 waits again. This replaces a dependency graph with crash-only
@@ -238,7 +264,7 @@ main (a connected LAN, another connection's mount, a host route) is
 **refused** — the route is not added, the reason is printed by `run` and
 shown by `status`, the other prefixes and the connection itself proceed.
 Mounts left over from a previous `expose=` value are removed. With an empty
-`expose=` the veth is torn down.
+`expose=` the veth is torn down — unless it is the connection's uplink.
 
 Example: the office pushes `192.168.1.0/24` and home wifi is `192.168.1.0/24`
 too. Inside the connection's ns the office meaning is intact
@@ -344,7 +370,7 @@ version.
 ## Status
 
 v0: run/up/down/status/exec, wg and openvpn helpers, mounts with collision
-refusal, nanny. Planned: orphan cleanup, `expose=auto`, IPv6, and an
+refusal, uplinks with the rule shorthand, nanny. Planned: orphan cleanup, `expose=auto`, IPv6, and an
 unprivileged `nsm exec` (connection namespaces owned by a per-user user
 namespace).
 

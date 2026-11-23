@@ -31,7 +31,10 @@ func (g *globals) cmdRun(name string) int {
 	if err != nil {
 		return g.fail("%v", err)
 	}
-	if st, err := os.Stat(c.RunScript()); err != nil || st.Mode()&0o111 == 0 {
+	// A connection with an uplink has nothing to transport: its run script
+	// is optional, and without one nsm run itself holds the skeleton.
+	transport := runnable(c.RunScript())
+	if !transport && !c.Meta.Uplink {
 		return g.fail("%s: run script missing or not executable", c.RunScript())
 	}
 	s := g.s
@@ -70,6 +73,15 @@ func (g *globals) cmdRun(name string) int {
 			logf("expose %s", r)
 		}
 	}
+	if c.Meta.Uplink {
+		if err := expose.Uplink(s, c, g.pool); err != nil {
+			return g.fail("uplink: %v", err)
+		}
+	} else if c.Meta.Rule != nil {
+		if err := expose.EnsureRule(s, c); err != nil {
+			return g.fail("rule: %v", err)
+		}
+	}
 
 	stateDir := filepath.Join(helper.RunDir, name)
 	if !s.DryRun {
@@ -83,19 +95,26 @@ func (g *globals) cmdRun(name string) int {
 	}
 
 	if s.DryRun {
-		logf("(dry run) would exec %s in netns %s; run scripts are not executed in dry run", c.RunScript(), c.Meta.Rides)
+		if transport {
+			logf("(dry run) would exec %s in netns %s; run scripts are not executed in dry run", c.RunScript(), c.Meta.Rides)
+		}
 		return 0
 	}
-	cmd := s.Command(c.Meta.Rides, c.RunScript())
-	cmd.Dir = c.Dir
-	cmd.Env = runEnv(c, g)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return g.fail("start %s: %v", c.RunScript(), err)
+	pgid := 0
+	done := make(chan error, 1) // silent for good when there is no transport
+	if transport {
+		cmd := s.Command(c.Meta.Rides, c.RunScript())
+		cmd.Dir = c.Dir
+		cmd.Env = runEnv(c, g)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			return g.fail("start %s: %v", c.RunScript(), err)
+		}
+		pgid = cmd.Process.Pid
+		go func() { done <- cmd.Wait() }()
+	} else {
+		logf("uplink ready; holding (no run script)")
 	}
-	pgid := cmd.Process.Pid
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -104,6 +123,10 @@ func (g *globals) cmdRun(name string) int {
 	defer tick.Stop()
 
 	stop := func(reason string, code int) int {
+		if pgid == 0 {
+			logf("%s; exiting", reason)
+			return code
+		}
 		logf("%s; stopping transport", reason)
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		select {
@@ -139,6 +162,12 @@ func (g *globals) cmdRun(name string) int {
 			return g.fail("%v", err)
 		}
 	}
+}
+
+// runnable reports whether the connection has a run script to execute.
+func runnable(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode()&0o111 != 0
 }
 
 // runEnv is the environment the run script (and the helpers it execs) see.

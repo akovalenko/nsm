@@ -21,7 +21,9 @@ usage: nsm [-C confdir] [-v] [-n] [-pool CIDR] [-wait DUR] <command> ...
 
 commands (root):
   run <name>                 foreground: build the skeleton, run the transport
-                             (this is what a supervisor should run)
+                             (this is what a supervisor should run); a
+                             connection with uplink= needs no run script --
+                             run itself holds it
   up <name>                  detach the built-in nanny around 'nsm run'
   down <name>                stop the nanny/run and tear the connection down
   status [name...]           what the kernel says about each connection

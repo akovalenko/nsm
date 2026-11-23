@@ -111,6 +111,42 @@ func TestParseMetaDefaultsAndErrors(t *testing.T) {
 	}
 }
 
+func TestParseMetaUplinkAndRule(t *testing.T) {
+	for _, src := range []string{"uplink=", "uplink=main"} {
+		if m, err := ParseMeta(strings.NewReader(src)); err != nil || !m.Uplink || m.Rule != nil {
+			t.Errorf("%q: %+v, %v", src, m, err)
+		}
+	}
+	for _, tc := range []struct {
+		src  string
+		want Rule
+	}{
+		{"rule=30200", Rule{Pref: 30200, Table: "main"}},
+		{"rule=30200:5300", Rule{Pref: 30200, Table: "5300"}},
+		{`rule="30200:"`, Rule{Pref: 30200, Table: "main"}},
+		{"rule=30200:office_t1-x", Rule{Pref: 30200, Table: "office_t1-x"}},
+	} {
+		m, err := ParseMeta(strings.NewReader(tc.src))
+		if err != nil || m.Rule == nil || *m.Rule != tc.want || m.Uplink {
+			t.Errorf("%q: %+v, %v", tc.src, m, err)
+		}
+	}
+	for _, bad := range []string{
+		"uplink=lappy",
+		"uplink=yes",
+		"rule=",
+		"rule=0",
+		"rule=abc",
+		"rule=30200:bad table",
+		"rule=2147483647",
+		"rule=30200\nrule=30201",
+	} {
+		if _, err := ParseMeta(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}
+
 func TestValidName(t *testing.T) {
 	for _, ok := range []string{"lappy", "client59", "a", "wg-office.2", "twelve_chars"} {
 		if !ValidName(ok) {
@@ -140,12 +176,15 @@ func TestLoadAndList(t *testing.T) {
 	mk("lappy", "")
 	mk("client59", "rides=lappy\nexpose=10.48.0.0/16\n")
 	mk("selfish", "rides=selfish\n")
+	mk("both", "uplink=main\nexpose=10.48.0.0/16\n")
+	mk("lonely", "rule=30200\n")
+	mk("bare", "uplink=main\nrule=30200:5300\n")
 	if err := os.WriteFile(filepath.Join(dir, "stray-file"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	names, err := List(dir)
-	if err != nil || strings.Join(names, ",") != "client59,lappy,selfish" {
+	if err != nil || strings.Join(names, ",") != "bare,both,client59,lappy,lonely,selfish" {
 		t.Errorf("List = %v, %v", names, err)
 	}
 	c, err := Load(dir, "client59")
@@ -160,6 +199,15 @@ func TestLoadAndList(t *testing.T) {
 	}
 	if _, err := Load(dir, "selfish"); err == nil {
 		t.Error("rides=self should fail")
+	}
+	if c, err := Load(dir, "bare"); err != nil || !c.Meta.Uplink || c.Meta.Rule == nil || *c.Meta.Rule != (Rule{Pref: 30200, Table: "5300"}) {
+		t.Errorf("bare: %+v, %v", c, err)
+	}
+	if _, err := Load(dir, "both"); err == nil {
+		t.Error("uplink and expose must not go together")
+	}
+	if _, err := Load(dir, "lonely"); err == nil {
+		t.Error("rule without a veth must fail")
 	}
 	if _, err := Load(dir, "nope"); err == nil {
 		t.Error("missing should fail")

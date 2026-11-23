@@ -1,9 +1,9 @@
 #!/bin/sh
-# bench-bare.sh -- a rootless lab for examples/bare: a namespace whose
-# uplink is main itself, while main's own traffic rides a WireGuard tunnel
-# set up the way NetworkManager sets it up (auto-default-route: the default
-# route in a private table, two rules selecting it, main's table keeping
-# the physical uplink).
+# bench-bare.sh -- a rootless lab for examples/bare: a transport-less
+# connection whose namespace goes out by main's physical uplink while main
+# itself rides a WireGuard tunnel set up the way NetworkManager sets it up
+# (auto-default-route: the default route in a private table, two rules
+# selecting it, main's table keeping the physical uplink).
 #
 # Needs no root: everything runs inside one throwaway user+mount+net+pid
 # namespace (unshare -Ur -m -n -p). The host's namespaces, routes, rules and
@@ -23,7 +23,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 NSM=${1:-$(dirname "$HERE")/nsm}
 EXAMPLES=${2:-$(dirname "$HERE")/examples}
 [ -x "$NSM" ] || { echo "usage: $0 [path-to-nsm] [examples-dir]" >&2; exit 2; }
-[ -f "$EXAMPLES/bare/run" ] || { echo "$EXAMPLES/bare/run not found" >&2; exit 2; }
+[ -f "$EXAMPLES/bare/meta" ] || { echo "$EXAMPLES/bare/meta not found" >&2; exit 2; }
 command -v unshare ip wg nft nc python3 sysctl pgrep ping >/dev/null || {
     echo "need: unshare ip wg nft nc python3 sysctl pgrep ping" >&2; exit 2; }
 NSM=$(cd "$(dirname "$NSM")" && pwd)/$(basename "$NSM")
@@ -46,22 +46,56 @@ check() { # LABEL WANT GOT
 }
 step() { echo; echo "== $*"; }
 in_bare() { "$NSM" -C "$LAB/etc" exec bare -- "$@"; }
-wait_bare() { # until the veth end in the namespace carries an address again
+nsm() { "$NSM" -C "$LAB/etc" "$@"; }
+count() { # how many policy rules name the veth
+    ip -j -4 rule show | python3 -c 'import json,sys; print(sum(1 for r in json.load(sys.stdin) if r.get("iif") == "ve-bare"))'
+}
+wait_bare() { # until the default route, the NAT chain and -- with rule= -- the pair are there
     i=0
     while [ $i -lt 80 ]; do
-        if ip -n bare -4 addr show dev eth0 2>/dev/null | grep -q 'inet ' &&
-               ip -n bare link show eth0 up 2>/dev/null | grep -q UP; then
+        if ip -n bare -j -4 route show default 2>/dev/null | grep -q '"dev":"ve0"' &&
+               nft list chain ip nsm ve-bare 2>/dev/null | grep -q masquerade &&
+               [ "$(count)" = "$want_rules" ]; then
             sleep 0.5; return 0
         fi
         sleep 0.25; i=$((i + 1))
     done
     return 1
 }
+# meta_bare [RULE] [WANT_RULES] -- rewrite bare's meta and bring it up
+meta_bare() {
+    nsm down bare >/dev/null 2>&1 || :
+    {
+        echo "uplink=main"
+        echo 'resolv="nameserver 9.9.9.9"'
+        [ -n "${1-}" ] && echo "rule=$1"
+        true
+    } > "$LAB/etc/bare/meta"
+    want_rules=${2-2}
+    nsm up bare
+    wait_bare || bad "bare did not come up"
+}
+# respawn -- kill nsm run the hard way and wait for the nanny's next one.
+# The nanny spells the whole command line out: -pool and -wait sit between
+# the confdir and the verb.
+respawn() {
+    runpat="nsm -C $LAB/etc -pool .* run bare"
+    pkill -9 -f "$runpat" || :
+    i=0; while [ $i -lt 20 ] && pgrep -f "$runpat" >/dev/null; do
+        sleep 0.25; i=$((i + 1))
+    done
+    i=0; while [ $i -lt 80 ] && ! pgrep -f "$runpat" >/dev/null; do
+        sleep 0.25; i=$((i + 1))
+    done
+    sleep 2
+}
+veth_addr() { nsm status bare | sed -n 's/^  veth: ve-bare \([0-9./]*\),.*/\1/p'; }
 
 LAB=$(mktemp -d /tmp/nsm-bare.XXXXXX)
 trap 'rm -rf "$LAB"' EXIT
 umask 077
 KEYS=$LAB/keys; mkdir -m 700 "$KEYS"
+want_rules=2
 
 [ -d /run/netns ] && [ -d /etc/netns ] || {
     echo "need /run/netns and /etc/netns to exist" >&2; exit 2; }
@@ -77,14 +111,23 @@ fi
 ip link set lo up
 sysctl -q -w net.ipv4.ip_forward=1
 
-# The world: LAN 203.0.113.0/24 (main's) and an "internet" segment
-# 198.51.100.0/24 where the tunnel server lives. `inet` is both main's
-# gateway and the host every probe talks to: it answers with the peer
-# address it sees, which tells the paths apart -- the tunnel server NATs to
-# 198.51.100.2, main's own LAN address is 203.0.113.2.
+# The world: LAN 203.0.113.0/24 (main's), an "internet" segment
+# 198.51.100.0/24 where the tunnel server lives, and a second provider
+# 100.64.0.0/24. Every probe talks to a gateway running an echo server that
+# answers with the peer address it sees, which tells the paths apart: the
+# tunnel server NATs to 198.51.100.2, main's LAN address is 203.0.113.2,
+# its address at the second provider is 100.64.0.2.
 step "topology"
-ip netns add inet
-ip netns add srv
+echo_server='
+import socket, threading
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 9000)); s.listen(64)
+def h(c, a):
+    c.sendall(("peer=%s\n" % a[0]).encode()); c.close()
+while True:
+    c, a = s.accept(); threading.Thread(target=h, args=(c, a), daemon=True).start()
+'
+for ns in inet srv isp2; do ip netns add "$ns"; done
 ip link add wan0 type veth peer name lan0 netns inet
 ip addr add 203.0.113.2/24 dev wan0
 ip link set wan0 up
@@ -100,19 +143,22 @@ ip -n srv link set eth0 up
 ip -n srv link set lo up
 ip -n srv route add default via 198.51.100.1
 ip netns exec srv sysctl -q -w net.ipv4.ip_forward=1
-# What NM leaves in main's table: the physical uplink.
+ip link add wan1 type veth peer name lan0 netns isp2
+# noprefixroute: main's own table learns nothing about this provider --
+# only table 5300 knows the way, so "by table 5300" and "by main's table"
+# lead to different places.
+ip addr add 100.64.0.2/24 dev wan1 noprefixroute
+ip link set wan1 up
+ip -n isp2 addr add 100.64.0.1/24 dev lan0
+ip -n isp2 link set lan0 up
+ip -n isp2 link set lo up
+# What NM leaves in main's table: the physical uplink (the first provider).
 ip -4 route add default via 203.0.113.1 dev wan0 metric 600
-
-ip netns exec inet python3 -u -c '
-import socket, threading
-s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("0.0.0.0", 9000)); s.listen(64)
-def h(c, a):
-    c.sendall(("peer=%s\n" % a[0]).encode()); c.close()
-while True:
-    c, a = s.accept(); threading.Thread(target=h, args=(c, a), daemon=True).start()
-' &
-echo "  main=203.0.113.2  gateway+internet=203.0.113.1/198.51.100.1  tunnel server=198.51.100.2"
+# A second way out, reachable only through its own table.
+ip -4 route add default via 100.64.0.1 dev wan1 onlink table 5300
+for ns in inet isp2; do ip netns exec "$ns" python3 -u -c "$echo_server" & done
+echo "  main=203.0.113.2 (LAN), 100.64.0.2 (isp2); gateways=203.0.113.1, 100.64.0.1"
+echo "  internet=198.51.100.1; tunnel server=198.51.100.2"
 
 # The tunnel, as NetworkManager 1.46 leaves a 0/0 WireGuard profile with
 # auto-default-route on: the default route in table = fwmark and the pair of
@@ -155,51 +201,41 @@ r=$(ip -4 route get 198.51.100.1 | head -1)
 case $r in *"dev lappy table 52166"*) ok "route get internet: $r";; *) bad "route get internet: $r";; esac
 check "main -> internet seen as" peer=198.51.100.2 "$(probe 198.51.100.1)"
 check "main -> LAN address stays on the LAN" peer=203.0.113.2 "$(probe 203.0.113.1)"
+check "main itself has no way to isp2 (only table 5300 does)" "" "$(probe 100.64.0.1)"
 check "lappy handshake" yes \
     "$([ "$(wg show lappy latest-handshakes | awk '{print $2}')" -gt 0 ] && echo yes || echo no)"
 check "main -> LAN gateway ping" ok "$(ping -c1 -W2 203.0.113.1 >/dev/null 2>&1 && echo ok || echo FAIL)"
 
-# The connection under test.
-step "nsm up bare (rule owned by the run script)"
+# The connection under test: a directory with nothing but meta.
+step "nsm run -n: the plan for bare (uplink=main, rule=30200)"
 mkdir -p "$LAB/etc/bare" "$LAB/etc/m1"
-cp "$EXAMPLES/bare/run" "$EXAMPLES/bare/meta" "$LAB/etc/bare/"
-chmod +x "$LAB/etc/bare/run"
-# A second connection with a mount, to see the two kinds coexist. Its
-# "transport" is just the address main mounts, owned by the namespace.
-printf '%s\n' '#!/bin/sh' \
-    'ip -n m1 link add payload0 type dummy 2>/dev/null || :' \
-    'ip -n m1 addr replace 10.48.0.1/32 dev payload0' \
-    'ip -n m1 link set payload0 up' \
-    'exec sleep 1000000' > "$LAB/etc/m1/run"
-chmod +x "$LAB/etc/m1/run"
-echo 'expose=10.48.0.1/32' > "$LAB/etc/m1/meta"
-"$NSM" -C "$LAB/etc" up bare
+{ echo "uplink=main"; echo "rule=30200"; echo 'resolv="nameserver 9.9.9.9"'; } > "$LAB/etc/bare/meta"
+nsm -n run bare 2>&1 | grep -v '^+ write' | sed 's/^/        /'
+check "no run script in the example" 0 "$(ls "$EXAMPLES/bare" | grep -c '^run$')"
+
+step "nsm up bare (uplink=main, rule=30200): the shorthand pair"
+nsm up bare
 wait_bare || bad "bare did not come up"
-"$NSM" -C "$LAB/etc" status bare | sed 's/^/        /'
-check "lookup rule in main" 1 "$(ip -4 rule | grep -c '^30200:.*iif ve-bare lookup main')"
-check "companion rule in main" 1 "$(ip -4 rule | grep -c '^30201:.*iif ve-bare unreachable')"
+nsm status bare | sed 's/^/        /'
+check "status: ve0 is the payload" 1 "$(nsm status bare | grep -c '  iface: ve0 (veth) 169.254.100.1/31 up')"
+check "status: nsm run holds it" 1 "$(nsm status bare | grep -c '  uplink: held by nsm run (run pid')"
+check "status: parts" 1 "$(nsm status bare | grep -c '  veth: ve-bare 169.254.100.0/31, nat, default via 169.254.100.0 dev ve0')"
+check "status: rules" 1 "$(nsm status bare | grep -c '  rules: 30200 lookup main, 30201 unreachable')"
+check "rules naming the veth in main" 2 "$(count)"
 check "bare -> internet seen as (THE point)" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
 check "bare -> LAN gateway seen as" peer=203.0.113.2 "$(in_bare nc -w 3 203.0.113.1 9000)"
 check "bare -> LAN gateway ping" ok "$(in_bare ping -c1 -W2 203.0.113.1 >/dev/null 2>&1 && echo ok || echo FAIL)"
-check "bare resolv.conf" "nameserver 1.1.1.1" "$(in_bare sh -c 'head -1 /etc/resolv.conf')"
+check "bare -> isp2: main's table has no way, fails closed" "" "$(in_bare nc -w 2 100.64.0.1 9000)"
+check "bare resolv.conf" "nameserver 9.9.9.9" "$(in_bare sh -c 'head -1 /etc/resolv.conf')"
 check "main -> internet still seen as" peer=198.51.100.2 "$(probe 198.51.100.1)"
-cp /run/nsm/bare/log "$LAB/log.bare"
 
-step "sudo-facing entry: nsm enter (target pinned to \$SUDO_UID)"
-r=$(SUDO_UID=0 "$NSM" -C "$LAB/etc" enter bare nc -w 3 198.51.100.1 9000 2>&1)
+step 'sudo-facing entry: nsm enter (target pinned to $SUDO_UID)'
+r=$(SUDO_UID=0 nsm enter bare nc -w 3 198.51.100.1 9000 2>&1)
 case $r in
 peer=*) check "enter bare -> internet seen as" peer=203.0.113.2 "$r";;
 *) echo "  note: enter drops with setgroups, which a rootless user namespace"
    echo "        has denied for good ($r); its network path is exec's, covered above";;
 esac
-
-step "control: without the rules bare rides the tunnel"
-ip -4 rule del pref 30200; ip -4 rule del pref 30201
-check "no rules -> seen as" peer=198.51.100.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
-ip -4 rule add pref 30200 iif ve-bare lookup main
-check "lookup rule alone -> seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
-ip -4 rule add pref 30201 iif ve-bare unreachable
-check "both rules -> seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
 
 step "uplink gone (no default route in main), tunnel still up"
 ip -4 route del default via 203.0.113.1 dev wan0 metric 600
@@ -217,99 +253,109 @@ sysctl -q -w net.ipv4.conf.all.rp_filter=1
 check "bare -> internet seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
 sysctl -q -w net.ipv4.conf.all.rp_filter=2
 
-step "nsm mounts coexist (m1 exposes 10.48.0.1/32)"
-"$NSM" -C "$LAB/etc" up m1
+step "nsm mounts coexist (m1 exposes 10.48.0.1/32; the pool skips bare's /31)"
+# A second connection with a mount. Its "transport" is just the address
+# main mounts, owned by the namespace.
+printf '%s\n' '#!/bin/sh' \
+    'ip -n m1 link add payload0 type dummy 2>/dev/null || :' \
+    'ip -n m1 addr replace 10.48.0.1/32 dev payload0' \
+    'ip -n m1 link set payload0 up' \
+    'exec sleep 1000000' > "$LAB/etc/m1/run"
+chmod +x "$LAB/etc/m1/run"
+echo 'expose=10.48.0.1/32' > "$LAB/etc/m1/meta"
+nsm up m1
 i=0
 while [ $i -lt 40 ] && ! ip -4 route show 10.48.0.1 2>/dev/null | grep -q .; do
     sleep 0.25; i=$((i + 1))
 done
 r=$(ip -4 route get 10.48.0.1 | head -1)
-case $r in *"via 169.254.100.1 dev ve-m1"*) ok "main route get mount: $r";; *) bad "main route get mount: $r";; esac
+case $r in *"via 169.254.100.3 dev ve-m1"*) ok "m1 got the next free /31: $r";; *) bad "main route get mount: $r";; esac
 check "main -> mounted address ping" ok "$(ping -c1 -W2 10.48.0.1 >/dev/null 2>&1 && echo ok || echo FAIL)"
 check "bare -> mounted address ping (bare follows main's table)" ok \
     "$(in_bare ping -c1 -W2 10.48.0.1 >/dev/null 2>&1 && echo ok || echo FAIL)"
-"$NSM" -C "$LAB/etc" status | sed 's/^/        /'
-ip -4 rule | sed 's/^/        /'
-nft list table ip nsm | sed 's/^/        /'
 
-step "restart: run script killed with SIGKILL, the nanny rebuilds"
-pkill -9 -f "$LAB/etc/bare/run"
-i=0; while [ $i -lt 20 ] && pgrep -f "$LAB/etc/bare/run" >/dev/null; do
-    sleep 0.25; i=$((i + 1))
-done
-i=0; while [ $i -lt 80 ] && ! pgrep -f "$LAB/etc/bare/run" >/dev/null; do
-    sleep 0.25; i=$((i + 1))
-done
+step "no shorthand (rule= absent): nsm touches no rule, bare follows main's rules"
+meta_bare "" 0
+check "rules naming the veth" 0 "$(count)"
+check "no rule -> bare rides the tunnel (bring your own)" peer=198.51.100.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
+nsaddr=$(ip -n bare -4 -o addr show dev ve0 | awk '{print $4}' | cut -d/ -f1)
+# ... by other means -- the tunnel profile's own ipv4.routing-rules would carry these
+ip -4 rule add pref 30200 from "$nsaddr" lookup main
+ip -4 rule add pref 30201 from "$nsaddr" unreachable
+check "own rules -> seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
+nsm down bare
+check "down leaves alone the rules it did not make" 2 "$(ip -4 rule | grep -c "^3020[01]:.*from $nsaddr ")"
+ip -4 rule del pref 30200; ip -4 rule del pref 30201
+
+step "another table: rule=30200:5300"
+meta_bare "30200:5300"
+check "status: rules" 1 "$(nsm status bare | grep -c '  rules: 30200 lookup 5300, 30201 unreachable')"
+check "bare -> isp2 seen as (through table 5300)" peer=100.64.0.2 "$(in_bare nc -w 3 100.64.0.1 9000)"
+check "bare -> LAN gateway: table 5300 has no way there, fails closed" "" "$(in_bare nc -w 2 203.0.113.1 9000)"
+check "bare -> internet: table 5300 has no way there, fails closed" "" "$(in_bare nc -w 2 198.51.100.1 9000)"
+
+step "an older value's leftovers: rule=30300; a respawn keeps the veth"
+addr_before=$(veth_addr)
+{ echo "uplink=main"; echo "rule=30300"; echo 'resolv="nameserver 9.9.9.9"'; } > "$LAB/etc/bare/meta"
+respawn
 wait_bare || bad "bare did not come back"
-check "rule count after respawn" 2 "$(ip -4 rule | grep -c '^3020[01]:')"
-check "masquerade rules after respawn" 1 "$(nft list chain ip nsm up-bare | grep -c masquerade)"
+check "rules naming the veth" 2 "$(count)"
+check "the pair moved" 1 "$(ip -4 rule | grep -c '^30300:.*iif ve-bare lookup main')"
+check "nothing left at 30200/30201" 0 "$(ip -4 rule | grep -c '^3020[01]:')"
+check "veth kept across the respawn" "$addr_before" "$(veth_addr)"
 check "bare -> internet seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
-check "status after respawn" running \
-    "$("$NSM" -C "$LAB/etc" status bare | sed -n 's/^  transport: \(running\).*/\1/p')"
+check "status after respawn" "held by nsm run" "$(nsm status bare | sed -n 's/^  uplink: \(held by nsm run\).*/\1/p')"
+# ... and the table changes in place: one lookup rule, the new one
+{ echo "uplink=main"; echo "rule=30300:5300"; echo 'resolv="nameserver 9.9.9.9"'; } > "$LAB/etc/bare/meta"
+respawn
+wait_bare || bad "bare did not come back"
+check "lookup rules at 30300" "30300: from all iif ve-bare lookup 5300" "$(ip -4 rule | grep '^30300:' | tr -s '\t' ' ')"
 
-step "nsm down bare"
-"$NSM" -C "$LAB/etc" down bare
+step "back to the example's meta, then nsm down bare"
+cp "$EXAMPLES/bare/meta" "$LAB/etc/bare/meta"
+respawn
+wait_bare || bad "bare did not come back"
+check "rules naming the veth" 2 "$(count)"
+check "bare -> internet seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
+nsm status | sed 's/^/        /'
+nsm down bare
 check "veth gone" 0 "$(ip -4 link show ve-bare 2>/dev/null | wc -l)"
-check "rules gone" 0 "$(ip -4 rule | grep -c '^3020[01]:')"
-check "chain gone" 0 "$(nft list table ip nsm 2>/dev/null | grep -c 'up-bare')"
+check "rules gone" 0 "$(ip -4 rule | grep -c 've-bare')"
+check "chain gone" 0 "$(nft list table ip nsm 2>/dev/null | grep -c 've-bare')"
 check "netns gone" 0 "$(ip netns list | grep -c '^bare')"
-"$NSM" -C "$LAB/etc" down m1
-echo "  table ip nsm after both are down: $(nft list table ip nsm 2>/dev/null | tr -s '\n' ' ')"
+nsm down m1
 check "no chain left in table ip nsm" 0 "$(nft list table ip nsm 2>/dev/null | grep -c 'chain ')"
 
-step "variant: the rule owned by the tunnel profile (NM ipv4.routing-rules)"
-ip -4 rule add pref 30200 from 169.254.53.1 lookup main
-ip -4 rule add pref 30201 from 169.254.53.1 unreachable
-sed 's/^RULE_PREF=30200$/RULE_PREF=/' "$EXAMPLES/bare/run" > "$LAB/etc/bare/run"
-chmod +x "$LAB/etc/bare/run"
-"$NSM" -C "$LAB/etc" up bare
-wait_bare || bad "bare did not come up"
-check "no rule from the script" 0 "$(ip -4 rule | grep -c 'iif ve-bare')"
-check "bare -> internet seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
-ip -4 route del default via 203.0.113.1 dev wan0 metric 600
-check "uplink gone -> no answer at all" "" "$(in_bare nc -w 2 198.51.100.1 9000)"
-ip -4 route add default via 203.0.113.1 dev wan0 metric 600
-"$NSM" -C "$LAB/etc" down bare
-check "the profile's rules outlive down (NM's to keep)" 2 "$(ip -4 rule | grep -c '^3020[01]:')"
-ip -4 rule del pref 30200; ip -4 rule del pref 30201
-cp "$EXAMPLES/bare/run" "$LAB/etc/bare/run"
-
 step "everything SIGKILLed, then down and up again"
-"$NSM" -C "$LAB/etc" up bare
+nsm up bare
 wait_bare || bad "bare did not come up"
-pkill -9 -f "nsm -C $LAB/etc"
-pkill -9 -f "$LAB/etc/bare/run"
+pkill -9 -f "nsm -C $LAB/etc" || :
 sleep 0.5
-"$NSM" -C "$LAB/etc" down bare
-echo "  after down from a killed run: rules=$(ip -4 rule | grep -c '^3020[01]:') chains=$(nft list table ip nsm 2>/dev/null | grep -c 'up-bare')"
-"$NSM" -C "$LAB/etc" up bare
+nsm down bare
+check "rules after down from a killed run" 0 "$(ip -4 rule | grep -c 've-bare')"
+check "chain after down from a killed run" 0 "$(nft list table ip nsm 2>/dev/null | grep -c 've-bare')"
+check "veth after down from a killed run" 0 "$(ip -4 link show ve-bare 2>/dev/null | wc -l)"
+nsm up bare
 wait_bare || bad "bare did not come up"
-check "rule count after up" 2 "$(ip -4 rule | grep -c '^3020[01]:')"
-check "masquerade rules after up" 1 "$(nft list chain ip nsm up-bare | grep -c masquerade)"
+check "rules after up" 2 "$(count)"
 check "bare -> internet seen as" peer=203.0.113.2 "$(in_bare nc -w 3 198.51.100.1 9000)"
-"$NSM" -C "$LAB/etc" down bare
+nsm down bare
 
-step "kernel: does an iif rule follow its device?"
-ip link add t0 type veth peer name t1
-ip -4 rule add pref 30500 iif t0 lookup main
-ip link del t0
-if ip -4 rule | grep -q '^30500:'; then
-    echo "  note: the rule outlives its device: $(ip -4 rule | grep '^30500:')"
-    ip link add t0 type veth peer name t1
-    if ip -4 rule del pref 30500 iif t0 lookup main 2>/dev/null; then
-        echo "  note: ...and follows the recreated device by name"
-    else
-        echo "  note: ...bound to the old device index: 'del ... iif t0' does not match it"
-    fi
-else
-    echo "  note: the rule dies with its device"
-fi
-ip -4 rule del pref 30500 2>/dev/null || :
-ip link del t0 2>/dev/null || :
+step "meta that does not make sense"
+mkdir -p "$LAB/etc/bad1" "$LAB/etc/bad2" "$LAB/etc/bad3"
+printf 'uplink=main\nexpose=10.0.0.0/8\n' > "$LAB/etc/bad1/meta" # the veth cannot be both
+printf 'rule=30200\n' > "$LAB/etc/bad2/meta"                     # no veth to rule on
+printf 'rule=0\n' > "$LAB/etc/bad3/meta"
+refused() { "$NSM" -C "$LAB/etc" run "$1" >/dev/null 2>&1 && echo admitted || echo refused; }
+check "uplink + expose" refused "$(refused bad1)"
+check "rule without a veth" refused "$(refused bad2)"
+check "rule=0" refused "$(refused bad3)"
+rm -f "$LAB/etc/m1/run" # no run script and no uplink: nothing to hold, nothing to run
+check "no run script and no uplink" refused "$(refused m1)"
 
 echo
 if [ "$fail" != 0 ] && [ -f "$LAB/log.bare" ]; then
-    echo "--- nsm log (bare, first run)"; sed 's/^/  | /' "$LAB/log.bare"
+    echo "--- nsm log (bare)"; sed 's/^/  | /' "$LAB/log.bare"
 fi
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]

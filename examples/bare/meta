@@ -1,6 +1,18 @@
-# No transport and no expose=: nothing is mounted into main, and nothing
-# from this namespace leaves by a tunnel -- see run.
-# rides=main by default: the uplink is main itself.
-# DNS inside the namespace: a resolver reachable over the uplink (main's
-# own resolv.conf may point into a tunnel).
-resolv="nameserver 1.1.1.1"
+# No transport: the namespace's uplink is main itself. nsm builds the veth
+# pair (ve-bare there, ve0 here) with a default route towards main and NAT
+# on main's side, and `nsm run` holds the connection -- there is no run
+# script to write. No expose= either: the veth is the way out of this
+# namespace, not a mount into main.
+uplink=main
+# Traffic arriving in main from the veth is routed by main's table and by
+# nothing else: `iif ve-bare lookup main` at 30200 with an `unreachable`
+# companion at 30201. The pair must sort before whatever rules send main's
+# own traffic into a tunnel -- NetworkManager's WireGuard pair sits at
+# 31006/31007 on the host this was written for, next to two exemptions of
+# its own at 30000/30100. The companion is the point: a rule whose table
+# holds no route is not final, so without it an uplink that is gone sends
+# this namespace through the tunnel. Drop the key to get no rules at all
+# and bring your own on iif ve-bare; "30200:5300" routes by table 5300.
+rule=30200
+# DNS inside the namespace: a resolver main does not route into a tunnel.
+resolv="nameserver 9.9.9.9"

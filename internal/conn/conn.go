@@ -38,6 +38,16 @@ type Meta struct {
 	Expose []netip.Prefix // prefixes to mount into main
 	Resolv []string       // resolv.conf pieces (literal directives or file paths), in order
 	MTU    int            // payload interface MTU override
+	Uplink bool           // no transport: a veth pair to main is the connection's uplink
+	Rule   *Rule          // policy rules for traffic arriving from the veth; nil = nsm installs none
+}
+
+// Rule is the shorthand pair of policy rules (README "Uplink"): traffic
+// arriving in main from the connection's veth is routed by Table -- and by
+// nothing else.
+type Rule struct {
+	Pref  int    // priority of the lookup rule; the unreachable companion takes Pref+1
+	Table string // as given to `ip rule`: a table number, or a name such as main
 }
 
 // Conn is a loaded connection directory.
@@ -85,6 +95,12 @@ func Load(confdir, name string) (*Conn, error) {
 	}
 	if c.Meta.Rides == c.Name {
 		return nil, fmt.Errorf("connection %s: rides itself", name)
+	}
+	switch {
+	case c.Meta.Uplink && len(c.Meta.Expose) > 0:
+		return nil, fmt.Errorf("connection %s: uplink and expose are mutually exclusive (the veth is either the way out of the namespace or a mount into it)", name)
+	case c.Meta.Rule != nil && !c.Meta.Uplink && len(c.Meta.Expose) == 0:
+		return nil, fmt.Errorf("connection %s: rule needs a veth (expose= or uplink=)", name)
 	}
 	return c, nil
 }
@@ -170,11 +186,47 @@ func ParseMeta(r io.Reader) (Meta, error) {
 				return m, fmt.Errorf("line %d: mtu %q: want an integer in 576..65535", ln, val)
 			}
 			m.MTU = n
+		case "uplink":
+			if val != "" && val != sys.Main {
+				return m, fmt.Errorf("line %d: uplink=%q: only main is supported", ln, val)
+			}
+			m.Uplink = true
+		case "rule":
+			if m.Rule != nil {
+				return m, fmt.Errorf("line %d: rule: already set", ln)
+			}
+			r, err := parseRule(val)
+			if err != nil {
+				return m, fmt.Errorf("line %d: rule %q: %v", ln, val, err)
+			}
+			m.Rule = r
 		default:
 			return m, fmt.Errorf("line %d: unknown key %q", ln, key)
 		}
 	}
 	return m, sc.Err()
+}
+
+// maxRulePref leaves room for the companion at Pref+1 and stays clear of
+// the values iproute2 and the kernel treat specially at the top of u32.
+const maxRulePref = 2147483646
+
+var tableRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// parseRule reads `rule=PRIORITY[:TABLE]`; without a table it is main.
+func parseRule(v string) (*Rule, error) {
+	prefS, table, _ := strings.Cut(v, ":")
+	pref, err := strconv.Atoi(prefS)
+	if err != nil || pref < 1 || pref > maxRulePref {
+		return nil, fmt.Errorf("want PRIORITY[:TABLE], the priority an integer in 1..%d", maxRulePref)
+	}
+	if table == "" {
+		table = sys.Main
+	}
+	if !tableRE.MatchString(table) {
+		return nil, fmt.Errorf("bad table %q", table)
+	}
+	return &Rule{Pref: pref, Table: table}, nil
 }
 
 // metaFields splits list-valued meta values on commas and whitespace, both.
