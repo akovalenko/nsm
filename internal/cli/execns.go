@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,8 @@ import (
 // cmdExec enters the connection's netns and drops to the invoking user: the
 // classic privileged-setns-then-setuid entry (what ip netns exec + runuser,
 // vopono and firejail do). Besides the netns it gives the command a private
-// mount ns with the connection's resolv.conf, like `ip netns exec` does.
+// mount ns with a sysfs remounted for the target netns and the connection's
+// resolv.conf, like `ip netns exec` does.
 func (g *globals) cmdExec(args []string, shell bool) int {
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -200,6 +202,19 @@ func enter(name string, target *user.User, path string, argv, env []string) erro
 				return fmt.Errorf("shadow %s: %w", p, err)
 			}
 		}
+	}
+
+	// Fresh sysfs for the target netns. sysfs is tagged with the network
+	// namespace of its mounter, not of its reader (the tunfd lesson), so
+	// after a bare setns /sys/class/net keeps listing main's interfaces.
+	// `ip netns exec` lazy-unmounts /sys and mounts a new sysfs — which,
+	// mounted after the setns, captures the target namespace. Same dance,
+	// while we still hold CAP_SYS_ADMIN (before the uid drop).
+	if err := unix.Unmount("/sys", unix.MNT_DETACH); err != nil && !errors.Is(err, unix.EINVAL) {
+		return fmt.Errorf("unmount /sys: %w", err)
+	}
+	if err := unix.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
+		return fmt.Errorf("mount sysfs: %w", err)
 	}
 
 	if target != nil {

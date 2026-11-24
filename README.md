@@ -285,6 +285,13 @@ connection's netns, a private mount namespace with that connection's
 sudo's env reset tends to lose if the files are there: `XDG_RUNTIME_DIR`,
 `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`.
 
+The mount namespace also carries a fresh sysfs, mounted after the setns
+(`ip netns exec`'s dance): sysfs lists the devices of the namespace that
+mounted it, not of the one reading it (the `tunfd` lesson), so a bare
+setns would leave `/sys/class/net` showing main's interfaces. The lazy
+unmount of the old `/sys` takes its submounts — `/sys/fs/cgroup`
+included — with it, exactly as under `ip netns exec`.
+
 The same mount namespace shadows the resolver-daemon sockets (`nscd`,
 `systemd-resolved`, `sssd`) with a `/dev/null` bind. Filesystem unix sockets
 cross netns boundaries, and without the shadow a daemon in main keeps
