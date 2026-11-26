@@ -14,12 +14,13 @@ import (
 	"github.com/akovalenko/nsm/internal/expose"
 	"github.com/akovalenko/nsm/internal/helper"
 	"github.com/akovalenko/nsm/internal/netns"
+	"github.com/akovalenko/nsm/internal/notify"
 	"github.com/akovalenko/nsm/internal/sys"
 )
 
 // cmdRun is the foreground entry a supervisor runs: wait for the substrate,
-// build the skeleton (ns, resolv.conf, mounts), start the run script in the
-// transport ns, and die when the substrate does.
+// build the skeleton (ns, resolv.conf, mounts), signal readiness, start the
+// run script in the transport ns, and die when the substrate does.
 func (g *globals) cmdRun(name string) int {
 	if err := g.needRoot("run"); err != nil {
 		return g.fail("%v", err)
@@ -92,6 +93,16 @@ func (g *globals) cmdRun(name string) int {
 			return g.fail("%v", err)
 		}
 		defer os.Remove(filepath.Join(stateDir, "run.pid"))
+	}
+
+	// The skeleton is up: tell a Type=notify supervisor that start-up is
+	// finished, so units ordered After= this one find the namespace (and
+	// its plumbing) in place instead of racing the exec. A lost signal is
+	// fatal -- the start job would only run into its timeout.
+	if sent, err := notify.Ready(); err != nil {
+		return g.fail("notify: %v", err)
+	} else if sent && s.Verbose {
+		logf("+ ready (READY=1)")
 	}
 
 	if s.DryRun {

@@ -3,13 +3,20 @@
 # exits on its own (reconnect cycle), ExecStop does not run: the skeleton
 # (netns, veth, mounts) survives and `nsm run` reconverges. An explicit
 # stop/restart runs ExecStop, which tears the whole connection down.
+#
+# Type=notify: `nsm run` sends READY=1 once the skeleton is built, so the
+# start job -- and everything ordered After= this unit, e.g. a daemon put
+# into the namespace with NetworkNamespacePath= -- completes when the
+# namespace exists, not when the binary was exec'd. The start timeout
+# (TimeoutStartSec=, 90s by default) must stay above the -wait `nsm run`
+# is given (30s by default).
 [Unit]
 Description=nsm connection %i
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/local/bin/nsm run %i
 ExecStop=/usr/local/bin/nsm down %i
 TimeoutStopSec=20

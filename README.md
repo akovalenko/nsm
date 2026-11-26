@@ -334,18 +334,28 @@ when they are missing (that is `exec`'s `userEnv`, shared).
 
 Pick one:
 
-- **systemd**: see `examples/nsm@.service` (`ExecStart=nsm run %i`,
-  `ExecStop=nsm down %i`, `Restart=always`). `systemctl enable nsm@lappy
-  nsm@client59`. systemd runs `ExecStop` only on an explicit stop/restart —
-  never when the process exits on its own — so reconnect cycles keep the
-  skeleton (netns, veth, mounts) and `nsm run` reconverges, while
-  `systemctl stop` tears the whole connection down. One gap: a stop that
-  arrives while the unit is waiting out `RestartSec` runs no `ExecStop`
-  (nothing is running) — finish with a manual `nsm down <name>`.
+- **systemd**: see `examples/nsm@.service` (`Type=notify`,
+  `ExecStart=nsm run %i`, `ExecStop=nsm down %i`, `Restart=always`).
+  `systemctl enable nsm@lappy nsm@client59`. systemd runs `ExecStop` only
+  on an explicit stop/restart — never when the process exits on its own —
+  so reconnect cycles keep the skeleton (netns, veth, mounts) and `nsm
+  run` reconverges, while `systemctl stop` tears the whole connection
+  down. One gap: a stop that arrives while the unit is waiting out
+  `RestartSec` runs no `ExecStop` (nothing is running) — finish with a
+  manual `nsm down <name>`.
 - **runit/s6**: `exec nsm run <name>` as the service's run script.
 - **nothing**: `nsm up <name>` detaches a nanny with exponential backoff
   (1s doubling to 60s, reset after a run that lasted 10s), logging to
   `/run/nsm/<name>/log`. `nsm down <name>` stops it.
+
+`nsm run` signals readiness for `Type=notify`: once the skeleton is built —
+namespace, veth, mounts, plus uplink or rule where the connection has them
+— it sends `READY=1` to `$NOTIFY_SOCKET`, the sd_notify(3) protocol in one
+datagram, with no libsystemd. A unit ordered `After=nsm@<name>.service`
+thus waits for the namespace to exist rather than for the binary to be
+exec'd, which is what a daemon placed there with
+`NetworkNamespacePath=/run/netns/<name>` needs. The signal means skeleton,
+not tunnel: the transport starts right after it.
 
 `nsm down` works in every mode; under an external supervisor stop the
 service first or it will resurrect the connection.
